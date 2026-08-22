@@ -1,0 +1,21 @@
+# Render deployment configuration for CodeGuard AI
+# Deploy guide: https://render.com/docs/deploy-fastapi
+services:
+  - type: web
+    name: codeguard-ai
+    runtime: python
+    plan: free
+    buildCommand: pip install -r backend/requirements.txt && cd frontend && npm install --legacy-peer-deps && npm run build && cd ..
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --app-dir backend
+    healthCheckPath: /docs
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: GLM_API_KEY
+        sync: false  # enter your OpenRouter API key in the Render dashboard
+      - key: GLM_API_URL
+        value: https://openrouter.ai/api/v1/chat/completions
+      - key: GLM_MODEL
+        value: z-ai/glm-4.7-flash
+      - key: CORS_ORIGINS
+        value: http://localhost:3000
