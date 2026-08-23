@@ -6,9 +6,9 @@ import {
   buildMarkdown,
   copyToClipboard,
   downloadFile,
-  printReport,
   badgeUrl,
 } from '../lib/exports';
+import { downloadPdfReport, sortFindings } from '../lib/pdf';
 
 const FILTERS = ['All', 'Critical', 'High', 'Medium', 'Low', 'Info', 'Custom'];
 
@@ -60,6 +60,13 @@ export default function ReportView({
     [visible]
   );
 
+  // The PDF always contains every finding except ones the user marked as
+  // false positives — the on-screen filter is a viewing tool only.
+  const pdfFindings = useMemo(
+    () => sortFindings(allFindings.filter((f) => !hiddenFps.includes(f.id))),
+    [allFindings, hiddenFps]
+  );
+
   const cvssList = useMemo(
     () =>
       allFindings
@@ -83,8 +90,13 @@ export default function ReportView({
       <div className="result-header">
         <h2>Analysis Report</h2>
         <div className="export-row">
-          <button className="btn btn-mini" onClick={() => printReport(report.raw, meta)}>
-            PDF
+          <button
+            className="btn btn-mini btn-pdf"
+            onClick={() => downloadPdfReport(report, meta, pdfFindings)}
+            disabled={pdfFindings.length === 0 && !report.raw}
+            title="Download the full report as a PDF file"
+          >
+            Download PDF
           </button>
           <button
             className="btn btn-mini"

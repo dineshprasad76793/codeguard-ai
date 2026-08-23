@@ -62,4 +62,4 @@ export const DEFAULT_RULES = [
   },
 ];
 
-export const MAX_HISTORY = 15;
+export const MAX_HISTORY = 10;
