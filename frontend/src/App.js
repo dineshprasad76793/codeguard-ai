@@ -1,160 +1,193 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import CodeEditor from './components/CodeEditor';
+import ReportView from './components/ReportView';
+import OptionsPanel from './components/OptionsPanel';
+import HistoryPanel from './components/HistoryPanel';
+import { parseReport } from './lib/parse';
+import { detectLanguage, runCustomRules } from './lib/detect';
+import { LANGUAGES, EXT_TO_LANG, MAX_HISTORY } from './lib/constants';
 
-const LANGUAGES = [
-  'Python', 'Java', 'C', 'C++', 'JavaScript', 'HTML', 'CSS',
+const LOADING_STEPS = [
+  'Sending request…',
+  'AI is reading your code…',
+  'Checking for vulnerabilities…',
+  'Mapping OWASP categories…',
+  'Calculating CVSS scores…',
+  'Writing recommendations…',
+  'Almost done…',
 ];
 
-const EXTENSION_TO_LANGUAGE = {
-  py: 'Python',
-  java: 'Java',
-  c: 'C',
-  h: 'C',
-  cpp: 'C++',
-  cc: 'C++',
-  cxx: 'C++',
-  js: 'JavaScript',
-  jsx: 'JavaScript',
-  mjs: 'JavaScript',
-  html: 'HTML',
-  htm: 'HTML',
-  css: 'CSS',
-};
-
-// API calls use relative paths: same-origin in production,
-// and the dev server proxies /api to the backend (see package.json "proxy").
-const BACKEND_URL = '';
-
-function parseReport(text) {
-  const quality = text.match(/Code Quality:\s*(\d+(?:\.\d+)?)\s*\/\s*10/i);
-  const security = text.match(/Security:\s*(\d+(?:\.\d+)?)\s*\/\s*10/i);
-  const counts = text.match(
-    /Critical:\s*(\d+)\s*\|\s*High:\s*(\d+)\s*\|\s*Medium:\s*(\d+)\s*\|\s*Low:\s*(\d+)/i
-  );
-  const cvssMatches = [...text.matchAll(/CVSS Estimate:\s*(\d+(?:\.\d+)?)/gi)];
-  return {
-    quality: quality ? Number(quality[1]) : null,
-    security: security ? Number(security[1]) : null,
-    critical: counts ? Number(counts[1]) : null,
-    high: counts ? Number(counts[2]) : null,
-    medium: counts ? Number(counts[3]) : null,
-    low: counts ? Number(counts[4]) : null,
-    cvssList: cvssMatches.map((m) => Number(m[1])),
-  };
+function loadJSON(key, fallback) {
+  try {
+    const v = localStorage.getItem(key);
+    return v ? JSON.parse(v) : fallback;
+  } catch (e) {
+    return fallback;
+  }
 }
 
-function cvssClass(score) {
-  if (score >= 9) return 'cvss-critical';
-  if (score >= 7) return 'cvss-high';
-  if (score >= 4) return 'cvss-medium';
-  if (score > 0) return 'cvss-low';
-  return 'cvss-none';
-}
-
-function scoreClass(score) {
-  if (score === null) return '';
-  if (score >= 8) return 'score-green';
-  if (score >= 5) return 'score-yellow';
-  return 'score-red';
-}
-
-function escapeHtml(text) {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function buildReportHtml(analysis) {
-  const now = new Date();
-  const dateStr = now.toLocaleString();
-  return '<!DOCTYPE html>\n'
-    + '<html>\n<head>\n<meta charset="UTF-8" />\n'
-    + '<title>CodeGuard AI Report</title>\n'
-    + '<style>\n'
-    + 'body { font-family: Segoe UI, Arial, sans-serif; background: #f1f5f9; color: #0f172a; padding: 40px; }\n'
-    + '.card { max-width: 900px; margin: 0 auto; background: #fff; border-radius: 12px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }\n'
-    + 'h1 { color: #2563eb; margin-bottom: 4px; }\n'
-    + '.meta { color: #64748b; font-size: 0.85rem; margin-bottom: 24px; }\n'
-    + 'pre { white-space: pre-wrap; background: #0f172a; color: #e2e8f0; padding: 20px; border-radius: 8px; font-size: 0.85rem; line-height: 1.6; }\n'
-    + '.footer { margin-top: 24px; color: #64748b; font-size: 0.75rem; text-align: center; }\n'
-    + '@media print { body { background: #fff; padding: 0; } .card { box-shadow: none; } pre { background: #f8fafc; color: #0f172a; } }\n'
-    + '</style>\n</head>\n<body>\n'
-    + '<div class="card">\n'
-    + '<h1>CodeGuard AI - Analysis Report</h1>\n'
-    + '<div class="meta">Generated: ' + dateStr + '</div>\n'
-    + '<pre>' + escapeHtml(analysis) + '</pre>\n'
-    + '<div class="footer">Copyright (c) 2026 Dinesh. All rights reserved. | dinesh.ai<br />AI-assisted analysis - verify all findings manually.</div>\n'
-    + '</div>\n</body>\n</html>';
+function saveJSON(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    /* storage full or unavailable — non-critical */
+  }
 }
 
 function App() {
-  const [mode, setMode] = useState('code');
+  const [theme, setTheme] = useState(() => loadJSON('cg-theme', 'dark'));
+  const [mode, setMode] = useState('code'); // code | url | github
   const [code, setCode] = useState('');
   const [language, setLanguage] = useState('Python');
+  const [langLocked, setLangLocked] = useState(false);
   const [url, setUrl] = useState('');
+  const [repoUrl, setRepoUrl] = useState('');
   const [authorized, setAuthorized] = useState(false);
+  const [options, setOptions] = useState({ owasp: false, secrets: false, deps: false });
+  const [customRules, setCustomRules] = useState(() => loadJSON('cg-rules', []));
   const [analysis, setAnalysis] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [elapsed, setElapsed] = useState(0);
+  const [jump, setJump] = useState(null);
+  const [hiddenFps, setHiddenFps] = useState([]);
+  const [history, setHistory] = useState(() => loadJSON('cg-history', []));
+  const [shareUrl, setShareUrl] = useState('');
+  const [currentTarget, setCurrentTarget] = useState('');
   const fileInputRef = useRef(null);
+  const wasAutoDetected = useRef(false);
 
-  const handleAnalyze = async () => {
-    if (!code.trim()) {
-      setError('Please paste some code before analyzing.');
-      return;
-    }
-    setError('');
-    setAnalysis('');
-    setLoading(true);
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    saveJSON('cg-theme', theme);
+  }, [theme]);
 
-    try {
-      const response = await fetch(BACKEND_URL + '/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ language, code }),
-      });
+  useEffect(() => saveJSON('cg-rules', customRules), [customRules]);
+  useEffect(() => saveJSON('cg-history', history), [history]);
 
-      const data = await response.json();
+  useEffect(() => {
+    if (!loading) return;
+    setElapsed(0);
+    const t = setInterval(() => setElapsed((e) => e + 1), 1000);
+    return () => clearInterval(t);
+  }, [loading]);
 
-      if (!response.ok) {
-        throw new Error(data.detail || 'Analysis failed.');
+  // Load shared report from ?share= link on first mount
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get('share');
+    if (!token || !/^[A-Za-z0-9_-]{10,64}$/.test(token)) return;
+    fetch('/api/share/' + encodeURIComponent(token))
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('Share link not found or expired.'))))
+      .then((d) => {
+        setAnalysis(d.analysis);
+        setCurrentTarget('Shared report');
+        setMode('url'); // findings view; editor hidden in url mode
+      })
+      .catch((e) => setError(e.message));
+  }, []);
+
+  const handleCodeChange = (value) => {
+    setCode(value);
+    if (!langLocked) {
+      const detected = detectLanguage(value);
+      if (detected) {
+        setLanguage(detected);
+        wasAutoDetected.current = true;
       }
-
-      setAnalysis(data.analysis);
-    } catch (err) {
-      setError(err.message || 'Could not connect to the backend.');
-    } finally {
-      setLoading(false);
     }
   };
 
-  const handleScan = async () => {
-    if (!url.trim()) {
-      setError('Please enter a URL to scan.');
-      return;
+  const handleLanguageSelect = (lang) => {
+    setLanguage(lang);
+    setLangLocked(true);
+  };
+
+  const pushHistory = (entry) => {
+    setHistory((h) => [entry, ...h.filter((x) => x.id !== entry.id)].slice(0, MAX_HISTORY));
+  };
+
+  const openHistory = (h) => {
+    setAnalysis(h.analysis);
+    setCurrentTarget(h.target);
+    setHiddenFps(loadJSON('cg-fp-' + h.id, []));
+    setShareUrl('');
+    setError('');
+    if (h.mode === 'code' && h.code) {
+      setMode('code');
+      setCode(h.code);
     }
-    if (!authorized) {
-      setError('Please confirm you have authorization to test this target.');
-      return;
-    }
+  };
+
+  const request = async (endpoint, body) => {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || 'Request failed.');
+    return data;
+  };
+
+  const runAnalysis = async () => {
     setError('');
     setAnalysis('');
-    setLoading(true);
+    setShareUrl('');
 
-    try {
-      const response = await fetch(BACKEND_URL + '/api/scan-url', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
-      });
+    const enabledRules = customRules.filter((r) => r.enabled !== false).map((r) => `${r.name}: ${r.pattern}`);
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.detail || 'Scan failed.');
+    let endpoint, body, target;
+    if (mode === 'code') {
+      if (!code.trim()) {
+        setError('Please paste some code before analyzing.');
+        return;
       }
+      endpoint = '/api/analyze';
+      body = {
+        language: language,
+        code,
+        options,
+        custom_rules: enabledRules,
+      };
+      target = `${language} code (${code.split('\n').length} lines)`;
+    } else if (mode === 'url') {
+      if (!url.trim()) {
+        setError('Please enter a URL to scan.');
+        return;
+      }
+      if (!authorized) {
+        setError('Please confirm you have authorization to test this target.');
+        return;
+      }
+      endpoint = '/api/scan-url';
+      body = { url };
+      target = url;
+    } else {
+      if (!repoUrl.trim()) {
+        setError('Please enter a GitHub repository URL.');
+        return;
+      }
+      endpoint = '/api/scan-github';
+      body = { url: repoUrl, options, custom_rules: enabledRules };
+      target = repoUrl;
+    }
 
+    setLoading(true);
+    try {
+      const data = await request(endpoint, body);
       setAnalysis(data.analysis);
+      setCurrentTarget(target);
+      const id = 's' + Date.now();
+      setHiddenFps([]);
+      pushHistory({
+        id,
+        ts: Date.now(),
+        mode,
+        target,
+        analysis: data.analysis,
+        code: mode === 'code' ? code.slice(0, 50_000) : '',
+      });
     } catch (err) {
       setError(err.message || 'Could not connect to the backend.');
     } finally {
@@ -165,144 +198,151 @@ function App() {
   const handleClear = () => {
     setCode('');
     setUrl('');
+    setRepoUrl('');
     setAnalysis('');
     setError('');
+    setShareUrl('');
+    setHiddenFps([]);
   };
 
-  const handleUploadClick = () => {
-    fileInputRef.current.click();
-  };
+  const handleUploadClick = () => fileInputRef.current && fileInputRef.current.click();
 
-  const handleFileUpload = (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
-
-    const ext = file.name.split('.').pop().toLowerCase();
-    const lang = EXTENSION_TO_LANGUAGE[ext];
-    if (!lang) {
-      setError(
-        'Unsupported file type. Supported: .py, .java, .c, .cpp, .js, .html, .css'
-      );
-      event.target.value = '';
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      setCode(e.target.result);
-      setLanguage(lang);
+  const handleFiles = (event) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+    const readers = files.map(
+      (f) =>
+        new Promise((resolve) => {
+          const r = new FileReader();
+          r.onload = (e) => resolve(`=== FILE: ${f.name} ===\n${e.target.result}`);
+          r.readAsText(f);
+        })
+    );
+    Promise.all(readers).then((parts) => {
+      setCode(parts.join('\n\n'));
+      setMode('code');
+      const ext = files[0].name.split('.').pop().toLowerCase();
+      if (EXT_TO_LANG[ext]) {
+        setLanguage(EXT_TO_LANG[ext]);
+        setLangLocked(true);
+      }
       setAnalysis('');
       setError('');
-    };
-    reader.readAsText(file);
+    });
     event.target.value = '';
   };
 
-  const handleDownload = () => {
-    const blob = new Blob([buildReportHtml(analysis)], { type: 'text/html' });
-    const link = document.createElement('a');
-    const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
-    link.href = URL.createObjectURL(blob);
-    link.download = 'codeguard-report-' + stamp + '.html';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(link.href);
+  const createShare = async () => {
+    if (shareUrl || !analysis) return;
+    try {
+      const d = await request('/api/share', {
+        analysis: analysis.slice(0, 60_000),
+        title: currentTarget,
+      });
+      const link = `${window.location.origin}/?share=${d.token}`;
+      setShareUrl(link);
+    } catch (e) {
+      setError('Could not create share link: ' + e.message);
+    }
   };
 
-  const report = analysis ? parseReport(analysis) : null;
+  const toggleFp = (id) => setHiddenFps((h) => [...h, id]);
+  const showAllFps = () => setHiddenFps([]);
+
+  const report = useMemo(() => {
+    if (!analysis) return null;
+    const parsed = parseReport(analysis);
+    if (mode === 'code' && code) {
+      const locals = runCustomRules(code, customRules);
+      parsed.issues = [...parsed.issues, ...locals];
+    }
+    return parsed;
+  }, [analysis, mode, code, customRules]);
+
+  const loadingStep = LOADING_STEPS[Math.min(Math.floor(elapsed / 7), LOADING_STEPS.length - 1)];
 
   return (
     <div className="app">
       <header className="header">
-        <h1 className="title">CodeGuard AI</h1>
-        <p className="subtitle">by Dinesh | dinesh.ai</p>
+        <div>
+          <h1 className="title">CodeGuard AI</h1>
+          <p className="subtitle">by Dinesh | dinesh.ai</p>
+        </div>
+        <button
+          className="theme-toggle"
+          onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+          title="Toggle theme"
+        >
+          {theme === 'dark' ? '☀' : '☾'}
+        </button>
       </header>
 
       <main className="main">
         <div className="input-section">
           <div className="tabs">
-            <button
-              className={'tab' + (mode === 'code' ? ' active' : '')}
-              onClick={() => { setMode('code'); setError(''); }}
-            >
+            <button className={'tab' + (mode === 'code' ? ' active' : '')} onClick={() => setMode('code')}>
               Code Analysis
             </button>
-            <button
-              className={'tab' + (mode === 'url' ? ' active' : '')}
-              onClick={() => { setMode('url'); setError(''); }}
-            >
+            <button className={'tab' + (mode === 'url' ? ' active' : '')} onClick={() => setMode('url')}>
               URL Security Check
+            </button>
+            <button className={'tab' + (mode === 'github' ? ' active' : '')} onClick={() => setMode('github')}>
+              GitHub Repo
             </button>
           </div>
 
-          {mode === 'code' ? (
+          {mode === 'code' && (
             <>
               <div className="controls">
                 <select
                   className="language-select"
                   value={language}
-                  onChange={(e) => setLanguage(e.target.value)}
+                  onChange={(e) => handleLanguageSelect(e.target.value)}
+                  title={wasAutoDetected.current ? 'Auto-detected — change if wrong' : 'Language'}
                 >
-                  {LANGUAGES.map((lang) => (
-                    <option key={lang} value={lang}>
-                      {lang}
+                  {LANGUAGES.map((l) => (
+                    <option key={l} value={l}>
+                      {l}
+                      {l === language && wasAutoDetected.current ? ' (auto)' : ''}
                     </option>
                   ))}
                 </select>
-
-                <button
-                  className="btn btn-analyze"
-                  onClick={handleAnalyze}
-                  disabled={loading}
-                >
-                  {loading ? 'Analyzing...' : 'Analyze Code'}
+                <button className="btn btn-analyze" onClick={runAnalysis} disabled={loading}>
+                  {loading ? 'Analyzing…' : 'Analyze Code'}
                 </button>
-
-                <button
-                  className="btn btn-upload"
-                  onClick={handleUploadClick}
-                  disabled={loading}
-                >
-                  Upload File
+                <button className="btn btn-upload" onClick={handleUploadClick} disabled={loading}>
+                  Upload Files
                 </button>
-
-                <button
-                  className="btn btn-clear"
-                  onClick={handleClear}
-                  disabled={loading}
-                >
+                <button className="btn btn-clear" onClick={handleClear} disabled={loading}>
                   Clear
                 </button>
-
                 <input
                   ref={fileInputRef}
                   type="file"
                   className="file-input"
-                  accept=".py,.java,.c,.cpp,.cc,.cxx,.h,.js,.jsx,.mjs,.html,.htm,.css"
-                  onChange={handleFileUpload}
+                  multiple
+                  accept=".py,.js,.mjs,.jsx,.ts,.tsx,.java,.go,.php,.c,.h,.cpp,.cc,.cxx,.hpp,.cs,.rs,.rb,.kt,.kts,.swift,.html,.htm,.css"
+                  onChange={handleFiles}
                 />
               </div>
-
-              <textarea
-                className="code-editor"
-                placeholder="Paste your code here..."
-                value={code}
-                onChange={(e) => setCode(e.target.value)}
-                spellCheck={false}
+              <CodeEditor value={code} onChange={handleCodeChange} jump={jump} />
+              <OptionsPanel
+                options={options}
+                setOptions={setOptions}
+                customRules={customRules}
+                setCustomRules={setCustomRules}
               />
             </>
-          ) : (
+          )}
+
+          {mode === 'url' && (
             <>
               <div className="warning-box">
-                ⚠️ <strong>Authorized testing only.</strong> Only scan websites
-                you own or have written permission to test (for example, a bug
-                bounty program's defined scope). Unauthorized scanning is
-                illegal in many countries. This tool performs a single passive
-                request and an educational assessment — it is not a penetration
-                test and does not exploit anything.
+                ⚠️ <strong>Authorized testing only.</strong> Only scan websites you own or
+                have written permission to test (e.g. a bug bounty program's defined
+                scope). One passive GET request — educational assessment, not a
+                penetration test.
               </div>
-
               <div className="controls">
                 <input
                   className="url-input"
@@ -312,24 +352,13 @@ function App() {
                   onChange={(e) => setUrl(e.target.value)}
                   spellCheck={false}
                 />
-
-                <button
-                  className="btn btn-analyze"
-                  onClick={handleScan}
-                  disabled={loading}
-                >
-                  {loading ? 'Scanning...' : 'Scan URL'}
+                <button className="btn btn-analyze" onClick={runAnalysis} disabled={loading}>
+                  {loading ? 'Scanning…' : 'Scan URL'}
                 </button>
-
-                <button
-                  className="btn btn-clear"
-                  onClick={handleClear}
-                  disabled={loading}
-                >
+                <button className="btn btn-clear" onClick={handleClear} disabled={loading}>
                   Clear
                 </button>
               </div>
-
               <label className="authorize-check">
                 <input
                   type="checkbox"
@@ -340,82 +369,89 @@ function App() {
               </label>
             </>
           )}
+
+          {mode === 'github' && (
+            <>
+              <div className="warning-box">
+                📁 Public repositories only. Up to 8 code files are fetched (capped
+                size) and analyzed together.
+              </div>
+              <div className="controls">
+                <input
+                  className="url-input"
+                  type="url"
+                  placeholder="https://github.com/owner/repo"
+                  value={repoUrl}
+                  onChange={(e) => setRepoUrl(e.target.value)}
+                  spellCheck={false}
+                />
+                <button className="btn btn-analyze" onClick={runAnalysis} disabled={loading}>
+                  {loading ? 'Scanning…' : 'Scan Repo'}
+                </button>
+                <button className="btn btn-clear" onClick={handleClear} disabled={loading}>
+                  Clear
+                </button>
+              </div>
+              <OptionsPanel
+                options={options}
+                setOptions={setOptions}
+                customRules={customRules}
+                setCustomRules={setCustomRules}
+              />
+            </>
+          )}
+
+          <HistoryPanel
+            history={history}
+            onOpen={openHistory}
+            onClear={() => setHistory([])}
+          />
         </div>
 
         <div className="result-section">
           {loading && (
             <div className="loading">
-              {mode === 'url' ? 'Scanning the URL...' : 'Analyzing your code...'}
+              <div className="loading-info">
+                <div className="spinner" />
+                <div>
+                  <div>{loadingStep}</div>
+                  <div className="elapsed">{elapsed}s elapsed</div>
+                </div>
+              </div>
+              <div className="progress-track">
+                <div
+                  className="progress-bar"
+                  style={{ width: `${Math.min(95, 8 + elapsed * 3)}%` }}
+                />
+              </div>
             </div>
           )}
 
           {error && <div className="error-box">{error}</div>}
 
-          {report && (
-            <div className="result-box">
-              <div className="result-header">
-                <h2>Analysis Report</h2>
-                <button className="btn btn-download" onClick={handleDownload}>
-                  Download Report
-                </button>
-              </div>
-
-              {(report.quality !== null || report.security !== null) && (
-                <div className="score-cards">
-                  {report.quality !== null && (
-                    <div className={'score-card ' + scoreClass(report.quality)}>
-                      <span className="score-label">Code Quality</span>
-                      <span className="score-value">{report.quality}/10</span>
-                    </div>
-                  )}
-                  {report.security !== null && (
-                    <div className={'score-card ' + scoreClass(report.security)}>
-                      <span className="score-label">Security</span>
-                      <span className="score-value">{report.security}/10</span>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {report.critical !== null && (
-                <div className="counters">
-                  <span className="chip chip-critical">
-                    🔴 Critical: {report.critical}
-                  </span>
-                  <span className="chip chip-high">🟠 High: {report.high}</span>
-                  <span className="chip chip-medium">
-                    🟡 Medium: {report.medium}
-                  </span>
-                  <span className="chip chip-low">🔵 Low: {report.low}</span>
-                </div>
-              )}
-
-              {report.cvssList.length > 0 && (
-                <div className="cvss-row">
-                  <span className="cvss-title">CVSS estimates:</span>
-                  {report.cvssList
-                    .slice()
-                    .sort((a, b) => b - a)
-                    .map((score, i) => (
-                      <span
-                        key={i}
-                        className={'cvss-badge ' + cvssClass(score)}
-                        title="Estimated CVSS v3.1 base score (educational estimate, requires verification)"
-                      >
-                        {score.toFixed(1)}
-                      </span>
-                    ))}
-                </div>
-              )}
-
-              <pre>{analysis}</pre>
-            </div>
+          {report && !loading && (
+            <ReportView
+              report={report}
+              meta={{ mode, target: currentTarget, siteUrl: window.location.origin }}
+              hiddenFps={hiddenFps}
+              onToggleFp={toggleFp}
+              onShowAllFps={showAllFps}
+              onJumpToLine={(line) => {
+                if (mode !== 'code') {
+                  setMode('code');
+                }
+                setJump({ line, ts: Date.now() });
+              }}
+              onCreateShare={createShare}
+              shareUrl={shareUrl}
+            />
           )}
         </div>
       </main>
 
       <footer className="footer">
-        Copyright (c) 2026 Dinesh. All rights reserved. | dinesh.ai
+        Copyright (c) 2026 Dinesh. All rights reserved. | dinesh.ai — AI-assisted
+        analysis; verify all findings manually. Authorized testing only.
       </footer>
     </div>
   );
