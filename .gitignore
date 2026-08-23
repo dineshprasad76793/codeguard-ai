@@ -20,4 +20,6 @@ frontend/dist/
 
 # OS
 .DS_Store
-Thumbs.db
+Thumbs.dbtest-pdf.mjs
+test-report.pdf
+*.pdf
