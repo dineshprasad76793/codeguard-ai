@@ -794,3 +794,43 @@ body {
   .editor-wrap { min-height: 220px; max-height: 40vh; }
   .result-header { flex-direction: column; align-items: flex-start; }
 }
+
+/* Phones: keep everything inside the viewport */
+@media (max-width: 640px) {
+  .header { padding: 14px 14px; }
+  .main { padding: 8px; gap: 10px; }
+
+  .tabs { padding: 4px; gap: 4px; }
+  .tab {
+    padding: 8px 4px;
+    font-size: 0.75rem;
+    white-space: normal;
+    line-height: 1.25;
+    min-width: 0;
+  }
+
+  .controls { gap: 8px; }
+  .controls .btn { flex: 1 1 auto; padding: 10px 12px; font-size: 0.85rem; }
+  .language-select { flex: 1 1 100%; }
+  .url-input { min-width: 0; flex: 1 1 100%; }
+  .controls .btn-clear { flex: 0 1 auto; }
+
+  .gutter { min-width: 34px; padding: 10px 4px 10px 8px; }
+  .highlight-layer, .code-input { padding: 10px 8px; }
+
+  .export-row { gap: 4px; }
+  .btn-mini { padding: 5px 8px; font-size: 0.7rem; }
+
+  .score-card { min-width: 120px; }
+  .cvss-badge { padding: 2px 7px; font-size: 0.72rem; }
+
+  .history-target { max-width: 140px; }
+  .rule-pattern { max-width: 120px; }
+
+  .warning-box, .authorize-check { font-size: 0.78rem; }
+  .stream-box { padding: 10px; }
+  .result-box { padding: 12px; }
+}
+
+/* Final safety net: never allow sideways page scroll */
+html, body { max-width: 100%; overflow-x: hidden; }
