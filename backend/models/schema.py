@@ -7,16 +7,19 @@ class AnalyzeRequest(BaseModel):
     code: str
     options: Optional[dict] = None
     custom_rules: Optional[List[str]] = None
+    stream: bool = False
 
 
 class UrlScanRequest(BaseModel):
     url: str
+    stream: bool = False
 
 
 class GithubScanRequest(BaseModel):
     url: str
     options: Optional[dict] = None
     custom_rules: Optional[List[str]] = None
+    stream: bool = False
 
 
 class AnalyzeResponse(BaseModel):

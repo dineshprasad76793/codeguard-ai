@@ -47,6 +47,7 @@ function App() {
   const [customRules, setCustomRules] = useState(() => loadJSON('cg-rules', []));
   const [analysis, setAnalysis] = useState('');
   const [loading, setLoading] = useState(false);
+  const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState('');
   const [elapsed, setElapsed] = useState(0);
   const [jump, setJump] = useState(null);
@@ -55,7 +56,16 @@ function App() {
   const [shareUrl, setShareUrl] = useState('');
   const [currentTarget, setCurrentTarget] = useState('');
   const fileInputRef = useRef(null);
+  const streamPreRef = useRef(null);
+  const inFlight = useRef(false);
   const wasAutoDetected = useRef(false);
+
+  // Keep the live streaming report scrolled to the newest text
+  useEffect(() => {
+    if (streaming && streamPreRef.current) {
+      streamPreRef.current.scrollTop = streamPreRef.current.scrollHeight;
+    }
+  }, [analysis, streaming]);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -130,7 +140,39 @@ function App() {
     return data;
   };
 
+  // Streams the AI answer chunk by chunk; onChunk receives the full
+  // accumulated text so far.
+  const requestStream = async (endpoint, body, onChunk) => {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, stream: true }),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.detail || 'Request failed.');
+    }
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('text/plain')) {
+      // Server answered with regular JSON (e.g. validation error shape)
+      const data = await response.json().catch(() => ({}));
+      return data.analysis || '';
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let acc = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      acc += decoder.decode(value, { stream: true });
+      onChunk(acc);
+    }
+    return acc;
+  };
+
   const runAnalysis = async () => {
+    if (inFlight.current) return; // guard against double-click races
+    inFlight.current = true;
     setError('');
     setAnalysis('');
     setShareUrl('');
@@ -174,24 +216,32 @@ function App() {
     }
 
     setLoading(true);
+    setStreaming(true);
     try {
-      const data = await request(endpoint, body);
-      setAnalysis(data.analysis);
-      setCurrentTarget(target);
-      const id = 's' + Date.now();
-      setHiddenFps([]);
-      pushHistory({
-        id,
-        ts: Date.now(),
-        mode,
-        target,
-        analysis: data.analysis,
-        code: mode === 'code' ? code.slice(0, 50_000) : '',
-      });
+      const text = await requestStream(endpoint, body, (partial) => setAnalysis(partial));
+      if (text.startsWith('ERROR:')) {
+        setError(text.replace('ERROR:', '').trim());
+        setAnalysis('');
+      } else {
+        setAnalysis(text);
+        setCurrentTarget(target);
+        const id = 's' + Date.now();
+        setHiddenFps([]);
+        pushHistory({
+          id,
+          ts: Date.now(),
+          mode,
+          target,
+          analysis: text,
+          code: mode === 'code' ? code.slice(0, 50_000) : '',
+        });
+      }
     } catch (err) {
       setError(err.message || 'Could not connect to the backend.');
     } finally {
       setLoading(false);
+      setStreaming(false);
+      inFlight.current = false;
     }
   };
 
@@ -424,6 +474,13 @@ function App() {
                   style={{ width: `${Math.min(95, 8 + elapsed * 3)}%` }}
                 />
               </div>
+            </div>
+          )}
+
+          {streaming && analysis && (
+            <div className="stream-box">
+              <div className="stream-label">● Live — AI is writing the report…</div>
+              <pre className="raw-report" ref={streamPreRef}>{analysis}</pre>
             </div>
           )}
 

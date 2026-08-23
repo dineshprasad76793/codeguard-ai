@@ -754,6 +754,30 @@ body {
   color: var(--text);
 }
 
+/* Live streaming view */
+.stream-box {
+  margin-top: 12px;
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+}
+
+.stream-label {
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 700;
+  margin-bottom: 8px;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse { 50% { opacity: 0.4; } }
+
+.stream-box .raw-report {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
 /* Footer */
 .footer {
   text-align: center;

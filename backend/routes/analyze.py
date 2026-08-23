@@ -1,5 +1,6 @@
 import re
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 import httpx
 from models.schema import (
     AnalyzeRequest,
@@ -7,9 +8,15 @@ from models.schema import (
     UrlScanRequest,
     GithubScanRequest,
 )
-from services.glm_service import analyze_code
-from services.url_scanner import analyze_url, validate_url
-from services.github_service import analyze_github_repo, RepoNotFound
+from services.glm_service import analyze_code, build_system_prompt, build_user_prompt, stream_glm
+from services.url_scanner import (
+    analyze_url,
+    validate_url,
+    collect_observations,
+    URL_SYSTEM_PROMPT,
+    build_user_prompt as build_url_prompt,
+)
+from services.github_service import analyze_github_repo, collect_repo_files, RepoNotFound
 
 router = APIRouter()
 
@@ -60,6 +67,15 @@ async def analyze(req: AnalyzeRequest):
     }
     custom_rules = _safe_custom_rules(req.custom_rules or [])
 
+    if req.stream:
+        return StreamingResponse(
+            stream_glm(
+                build_system_prompt(options, custom_rules),
+                build_user_prompt(language, req.code),
+            ),
+            media_type="text/plain; charset=utf-8",
+        )
+
     try:
         analysis = await analyze_code(language, req.code, options, custom_rules)
         return AnalyzeResponse(success=True, analysis=analysis)
@@ -78,6 +94,19 @@ async def scan_url(req: UrlScanRequest):
         url = validate_url(req.url)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    if req.stream:
+        try:
+            obs = await collect_observations(url)
+        except httpx.HTTPError:
+            raise HTTPException(
+                status_code=502,
+                detail="Could not reach the target URL. Check the address and try again.",
+            )
+        return StreamingResponse(
+            stream_glm(URL_SYSTEM_PROMPT, build_url_prompt(obs)),
+            media_type="text/plain; charset=utf-8",
+        )
 
     try:
         analysis = await analyze_url(url)
@@ -101,8 +130,23 @@ async def scan_github(req: GithubScanRequest):
             "secrets": bool(req.options.get("secrets")) if req.options else False,
             "deps": bool(req.options.get("deps")) if req.options else False,
         }
+        custom_rules = _safe_custom_rules(req.custom_rules or [])
+
+        if req.stream:
+            files = await collect_repo_files(req.url)
+            combined = "\n\n".join(f"=== FILE: {p} ===\n{c}" for p, c in files)
+            langs = sorted({p.rsplit(".", 1)[-1].lower() for p, _ in files})
+            language = f"Multiple ({', '.join(langs)}) - GitHub repository"
+            return StreamingResponse(
+                stream_glm(
+                    build_system_prompt(options, custom_rules),
+                    build_user_prompt(language, combined),
+                ),
+                media_type="text/plain; charset=utf-8",
+            )
+
         analysis = await analyze_github_repo(
-            req.url, options, _safe_custom_rules(req.custom_rules or [])
+            req.url, options, custom_rules
         )
         return AnalyzeResponse(success=True, analysis=analysis)
     except RepoNotFound as e:

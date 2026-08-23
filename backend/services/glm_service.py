@@ -1,4 +1,5 @@
 import os
+import json
 import httpx
 from dotenv import load_dotenv
 
@@ -161,3 +162,62 @@ async def analyze_code(
         build_system_prompt(options, custom_rules),
         build_user_prompt(language, code),
     )
+
+
+async def stream_glm(system_prompt: str, user_prompt: str):
+    """Yield the AI answer piece by piece (SSE upstream, plain text downstream).
+
+    Reasoning-model "thinking" deltas are skipped; only the final answer
+    content is streamed to the client.
+    """
+    if not GLM_API_KEY:
+        yield "ERROR: GLM_API_KEY is not configured on the server."
+        return
+
+    headers = {
+        "Authorization": f"Bearer {GLM_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost:3000",
+        "X-Title": "CodeGuard AI",
+    }
+    payload = {
+        "model": GLM_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.3,
+        "max_tokens": 8192,
+        "stream": True,
+    }
+
+    emitted = False
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            async with client.stream(
+                "POST", GLM_API_URL, headers=headers, json=payload
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[len("data: "):].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    piece = (choices[0].get("delta") or {}).get("content")
+                    if piece:
+                        emitted = True
+                        yield piece
+    except Exception:
+        if not emitted:
+            yield "ERROR: The analysis service is temporarily unavailable. Please try again."
+        return
+    if not emitted:
+        yield "ERROR: The AI returned an empty analysis. Please try again."
