@@ -1,4 +1,3 @@
-import re
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 import httpx
@@ -8,7 +7,12 @@ from models.schema import (
     UrlScanRequest,
     GithubScanRequest,
 )
-from services.glm_service import analyze_code, build_system_prompt, build_user_prompt, stream_glm
+from services.glm_service import (
+    analyze_code,
+    build_system_prompt,
+    build_user_prompt,
+    stream_glm,
+)
 from services.url_scanner import (
     analyze_url,
     validate_url,
@@ -16,7 +20,12 @@ from services.url_scanner import (
     URL_SYSTEM_PROMPT,
     build_user_prompt as build_url_prompt,
 )
-from services.github_service import analyze_github_repo, collect_repo_files, RepoNotFound
+from services.github_service import (
+    analyze_github_repo,
+    collect_repo_files,
+    RepoNotFound,
+)
+from services.sanitizer import sanitize_custom_rules, RuleRejected
 
 router = APIRouter()
 
@@ -32,16 +41,18 @@ GENERIC_AI_ERROR = (
 )
 
 
-def _safe_custom_rules(rules):
-    if not isinstance(rules, list):
-        return []
-    clean = []
-    for r in rules:
-        if isinstance(r, str) and r.strip():
-            clean.append(r.strip()[:200])
-        if len(clean) >= 20:
-            break
-    return clean
+def _clean_rules(rules):
+    try:
+        return sanitize_custom_rules(rules)
+    except RuleRejected as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+def _opts(req):
+    """Typed options -> plain dict for the prompt builder."""
+    if req.options is None:
+        return {"owasp": False, "secrets": False, "deps": False}
+    return req.options.model_dump()
 
 
 @router.post("/api/analyze", response_model=AnalyzeResponse)
@@ -60,12 +71,8 @@ async def analyze(req: AnalyzeRequest):
             detail=f"Unsupported language: {req.language}",
         )
 
-    options = {
-        "owasp": bool(req.options.get("owasp")) if req.options else False,
-        "secrets": bool(req.options.get("secrets")) if req.options else False,
-        "deps": bool(req.options.get("deps")) if req.options else False,
-    }
-    custom_rules = _safe_custom_rules(req.custom_rules or [])
+    options = _opts(req)
+    custom_rules = _clean_rules(req.custom_rules)
 
     if req.stream:
         return StreamingResponse(
@@ -80,7 +87,6 @@ async def analyze(req: AnalyzeRequest):
         analysis = await analyze_code(language, req.code, options, custom_rules)
         return AnalyzeResponse(success=True, analysis=analysis)
     except httpx.HTTPStatusError:
-        # Never leak upstream URLs/status details to the client.
         raise HTTPException(status_code=502, detail=GENERIC_AI_ERROR)
     except httpx.HTTPError:
         raise HTTPException(status_code=504, detail=GENERIC_AI_ERROR)
@@ -124,13 +130,9 @@ async def scan_url(req: UrlScanRequest):
 
 @router.post("/api/scan-github", response_model=AnalyzeResponse)
 async def scan_github(req: GithubScanRequest):
+    options = _opts(req)
     try:
-        options = {
-            "owasp": bool(req.options.get("owasp")) if req.options else False,
-            "secrets": bool(req.options.get("secrets")) if req.options else False,
-            "deps": bool(req.options.get("deps")) if req.options else False,
-        }
-        custom_rules = _safe_custom_rules(req.custom_rules or [])
+        custom_rules = _clean_rules(req.custom_rules)
 
         if req.stream:
             files = await collect_repo_files(req.url)
@@ -145,10 +147,10 @@ async def scan_github(req: GithubScanRequest):
                 media_type="text/plain; charset=utf-8",
             )
 
-        analysis = await analyze_github_repo(
-            req.url, options, custom_rules
-        )
+        analysis = await analyze_github_repo(req.url, options, custom_rules)
         return AnalyzeResponse(success=True, analysis=analysis)
+    except RuleRejected as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except RepoNotFound as e:
         raise HTTPException(status_code=400, detail=str(e))
     except httpx.HTTPStatusError:

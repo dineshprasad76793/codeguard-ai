@@ -1,9 +1,15 @@
 """Security middleware for CodeGuard AI.
 
-Adds security headers, per-IP rate limiting, request body size caps,
-and optional API-token authentication (set CG_API_TOKEN to enable).
+- Security headers on every response
+- Per-IP rate limiting (strictest on AI endpoints)
+- Request body size caps
+- Optional API-token auth (CG_API_TOKEN): X-API-Key header,
+  verified with secrets.compare_digest (constant-time)
+- /docs, /redoc, /openapi.json blocked in production (DOCS_ENABLED=true
+  to re-enable locally)
 """
 import os
+import secrets
 import time
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -15,6 +21,8 @@ RATE_BUCKETS = {
     "default": (60, 60),  # 60 other API calls per minute per IP
 }
 MAX_BODY_BYTES = 1_000_000  # 1 MB
+
+DOCS_PATHS = ("/docs", "/redoc", "/openapi.json")
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -35,6 +43,25 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "base-uri 'self'"
         )
         return response
+
+
+class DocsProtectionMiddleware(BaseHTTPMiddleware):
+    """Hide interactive API documentation in production.
+
+    Set DOCS_ENABLED=true in the environment to expose /docs during
+    development. A valid API token (when auth is enabled) also unlocks it.
+    """
+
+    async def dispatch(self, request, call_next):
+        path = request.url.path.rstrip("/")
+        if path in DOCS_PATHS and os.getenv("DOCS_ENABLED", "").lower() != "true":
+            token = os.getenv("CG_API_TOKEN", "")
+            provided = request.headers.get("x-api-key", "") or request.headers.get(
+                "x-api-token", ""
+            )
+            if not (token and provided and secrets.compare_digest(token, provided)):
+                return JSONResponse({"detail": "Not found."}, status_code=404)
+        return await call_next(request)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -86,10 +113,16 @@ class BodySizeLimitMiddleware(BaseHTTPMiddleware):
 class ApiTokenMiddleware(BaseHTTPMiddleware):
     """Optional token auth. Enabled only when CG_API_TOKEN is set.
 
+    Accepts X-API-Key (preferred) or X-API-Token (legacy alias), verified
+    with secrets.compare_digest (constant-time).
+
     Public: /api/health and GET /api/share/{token} (share recipients).
     """
 
     PUBLIC_PATHS = ("/api/health",)
+
+    def _provided_token(self, request):
+        return request.headers.get("x-api-key") or request.headers.get("x-api-token") or ""
 
     async def dispatch(self, request, call_next):
         token = os.getenv("CG_API_TOKEN", "")
@@ -101,9 +134,11 @@ class ApiTokenMiddleware(BaseHTTPMiddleware):
             and not share_read
             and not any(path.startswith(p) for p in self.PUBLIC_PATHS)
         )
-        if needs_auth and request.headers.get("x-api-token", "") != token:
+        if needs_auth and not secrets.compare_digest(
+            self._provided_token(request), token
+        ):
             return JSONResponse(
-                {"detail": "Invalid or missing API token (X-API-Token header)."},
+                {"detail": "Invalid or missing API key (X-API-Key header)."},
                 status_code=401,
             )
         return await call_next(request)

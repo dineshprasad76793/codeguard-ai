@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from security import (
     ApiTokenMiddleware,
     BodySizeLimitMiddleware,
+    DocsProtectionMiddleware,
     RateLimitMiddleware,
     SecurityHeadersMiddleware,
 )
@@ -25,6 +26,7 @@ app = FastAPI(
 # errors returned by inner middleware, so it is added last.
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(ApiTokenMiddleware)
+app.add_middleware(DocsProtectionMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(BodySizeLimitMiddleware)
 
@@ -38,7 +40,7 @@ if cors_origins:
         allow_origins=cors_origins,
         allow_credentials=False,
         allow_methods=["GET", "POST"],
-        allow_headers=["Content-Type", "X-API-Token"],
+        allow_headers=["Content-Type", "X-API-Key", "X-API-Token"],
     )
 
 from routes.analyze import router as analyze_router
@@ -50,7 +52,8 @@ app.include_router(share_router)
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "service": "CodeGuard AI", "version": "2.0.0"}
+    # Deliberately generic: no version or build details from public endpoints.
+    return {"status": "ok"}
 
 
 # Serve the React production build (single-service deployment).

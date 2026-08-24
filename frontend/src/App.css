@@ -382,6 +382,32 @@ body {
 
 .authorize-check input { accent-color: var(--accent); }
 
+/* Optional API key input */
+.api-key-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 8px 14px;
+}
+
+.api-key-row label {
+  font-size: 0.78rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.api-key-row input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.82rem;
+  outline: none;
+}
+
 /* History */
 .history-panel {
   border: 1px solid var(--border);

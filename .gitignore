@@ -20,6 +20,7 @@ frontend/dist/
 
 # OS
 .DS_Store
-Thumbs.dbtest-pdf.mjs
-test-report.pdf
 *.pdf
+test-pdf.mjs
+test-report.pdf
+shares.db

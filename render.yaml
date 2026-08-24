@@ -20,6 +20,10 @@ services:
       - key: CORS_ORIGINS
         value: ""     # same-origin only (frontend served by this service)
       - key: CG_API_TOKEN
-        sync: false  # optional: set to require X-API-Token on all API calls
+        sync: false  # optional: set to require X-API-Key on all API calls
+      - key: DOCS_ENABLED
+        value: "false"  # /docs, /redoc, /openapi.json return 404 in production
+      - key: SHARE_SECRET
+        sync: false  # optional: stable HMAC secret for share links
       - key: SHARE_TTL_SECONDS
         value: 86400

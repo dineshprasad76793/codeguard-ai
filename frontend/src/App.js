@@ -53,6 +53,7 @@ function App() {
   const [jump, setJump] = useState(null);
   const [hiddenFps, setHiddenFps] = useState([]);
   const [history, setHistory] = useState(() => loadJSON('cg-history', []));
+  const [apiKey, setApiKey] = useState(() => loadJSON('cg-api-key', ''));
   const [shareUrl, setShareUrl] = useState('');
   const [currentTarget, setCurrentTarget] = useState('');
   const fileInputRef = useRef(null);
@@ -74,6 +75,7 @@ function App() {
 
   useEffect(() => saveJSON('cg-rules', customRules), [customRules]);
   useEffect(() => saveJSON('cg-history', history), [history]);
+  useEffect(() => saveJSON('cg-api-key', apiKey), [apiKey]);
 
   useEffect(() => {
     if (!loading) return;
@@ -143,12 +145,22 @@ function App() {
   // Streams the AI answer chunk by chunk; onChunk receives the full
   // accumulated text so far.
   const requestStream = async (endpoint, body, onChunk) => {
+    const headers = { 'Content-Type': 'application/json' };
+    if (apiKey) headers['X-API-Key'] = apiKey;
     const response = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ ...body, stream: true }),
     });
     if (!response.ok) {
+      if (response.status === 403) {
+        throw new Error(
+          'Blocked by the network firewall (403). Your code contains patterns ' +
+          '(like rm -rf, /etc/passwd or ../) that the firewall mistakes for a real ' +
+          'attack. Slightly change those lines and try again, or ask the site ' +
+          'owner to add a firewall exception for this page.'
+        );
+      }
       const data = await response.json().catch(() => ({}));
       throw new Error(data.detail || 'Request failed.');
     }
@@ -450,6 +462,18 @@ function App() {
               />
             </>
           )}
+
+          <div className="api-key-row">
+            <label htmlFor="api-key">API key (optional)</label>
+            <input
+              id="api-key"
+              type="password"
+              placeholder="Only needed if the site requires a key"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              autoComplete="off"
+            />
+          </div>
 
           <HistoryPanel
             history={history}
