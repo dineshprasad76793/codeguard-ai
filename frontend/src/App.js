@@ -140,6 +140,12 @@ function App() {
       body: JSON.stringify(body),
     });
     const data = await response.json().catch(() => ({}));
+    if (response.status === 401) {
+      throw new Error(
+        'API key missing or invalid (401). Paste the site API key into the ' +
+          '"API key" field, then try again.'
+      );
+    }
     if (!response.ok) throw new Error(data.detail || 'Request failed.');
     return data;
   };
@@ -155,6 +161,12 @@ function App() {
       body: JSON.stringify({ ...body, stream: true }),
     });
     if (!response.ok) {
+      if (response.status === 401) {
+        throw new Error(
+          'API key missing or invalid (401). Paste the site API key into the ' +
+            '"API key" field, then try again.'
+        );
+      }
       if (response.status === 403) {
         throw new Error(
           'Blocked by the network firewall (403). Your code contains patterns ' +
@@ -470,7 +482,7 @@ function App() {
             <input
               id="api-key"
               type="password"
-              placeholder="Only needed if the site requires a key"
+              placeholder="Paste your API key here (required)"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               autoComplete="off"
