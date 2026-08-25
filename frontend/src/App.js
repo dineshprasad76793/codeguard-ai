@@ -478,11 +478,11 @@ function App() {
           )}
 
           <div className="api-key-row">
-            <label htmlFor="api-key">API key</label>
+            <label htmlFor="api-key">API key (optional)</label>
             <input
               id="api-key"
               type="password"
-              placeholder="Paste your API key here (required)"
+              placeholder="Optional — only needed for direct API calls"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               autoComplete="off"

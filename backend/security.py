@@ -1,10 +1,13 @@
 """Security middleware and helpers for CodeGuard AI.
 
 - MANDATORY API-token auth (CG_API_TOKEN): every /api call except
-  /api/health and share-link reads requires the X-API-Key header,
-  verified with secrets.compare_digest (constant-time). Fail-closed:
-  the application refuses to start without a token unless
-  REQUIRE_API_AUTH=false (local development only).
+  /api/health and share-link reads requires either the X-API-Key header
+  (verified with secrets.compare_digest, constant-time) OR a valid
+  first-party site-session cookie (issued automatically to browsers that
+  load the SPA — HttpOnly, SameSite=Strict, signed, short-lived). This
+  lets the public website work with no key entry while direct API callers
+  still authenticate. Fail-closed: the application refuses to start
+  without a token unless REQUIRE_API_AUTH=false (local development only).
 - Security headers applied to EVERY response, including 401/429/413
   errors produced by middleware (this middleware must be the OUTERMOST
   app middleware; see main.py ordering).
@@ -12,9 +15,13 @@
 - /docs, /redoc, /openapi.json blocked in production (DOCS_ENABLED=true
   to re-enable locally).
 """
+import hashlib
+import hmac
 import logging
 import os
+import re
 import secrets
+import time
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -23,6 +30,41 @@ logger = logging.getLogger("codeguard.security")
 
 MAX_BODY_BYTES = 1_000_000  # 1 MB
 DOCS_PATHS = ("/docs", "/redoc", "/openapi.json")
+
+# ── First-party site sessions ─────────────────────────────────────
+# Browsers loading the SPA receive a signed HttpOnly SameSite=Strict
+# cookie; it authorizes normal site usage without any key entry. The
+# master API key never ships in the static bundle. Per-IP rate limits
+# remain the primary abuse control for this keyless path.
+SITE_SESSION_COOKIE = "cg_session"
+SITE_SESSION_TTL_SECONDS = 86400  # 24h
+
+_session_secret = os.getenv("SHARE_SECRET", "") or secrets.token_hex(32)
+
+
+def issue_session_token() -> str:
+    ts = str(int(time.time()))
+    sig = hmac.new(
+        _session_secret.encode(), f"cg-session:{ts}".encode(), hashlib.sha256
+    ).hexdigest()
+    return f"{ts}.{sig}"
+
+
+def session_token_is_valid(token: str) -> bool:
+    parts = (token or "").split(".")
+    if len(parts) != 2:
+        return False
+    ts_str, sig = parts
+    if not ts_str.isdigit() or len(ts_str) > 12:
+        return False
+    if not re.fullmatch(r"[0-9a-f]{64}", sig):
+        return False
+    expected = hmac.new(
+        _session_secret.encode(), f"cg-session:{ts_str}".encode(), hashlib.sha256
+    ).hexdigest()
+    if not secrets.compare_digest(sig, expected):
+        return False
+    return time.time() - int(ts_str) <= SITE_SESSION_TTL_SECONDS
 
 # Auth is enforced unless explicitly disabled for local development.
 AUTH_REQUIRED = os.getenv("REQUIRE_API_AUTH", "true").strip().lower() != "false"
@@ -94,7 +136,9 @@ def client_ip(request: Request) -> str:
 
 
 class ApiTokenMiddleware(BaseHTTPMiddleware):
-    """Mandatory token auth on /api/* (fail closed when REQUIRE_API_AUTH).
+    """Mandatory auth on /api/*: valid X-API-Key OR a first-party site
+    session cookie (issued to browsers loading the SPA). Fail closed when
+    REQUIRE_API_AUTH.
 
     Accepts X-API-Key (preferred) or X-API-Token (legacy alias), verified
     in constant time against every configured key.
@@ -121,7 +165,15 @@ class ApiTokenMiddleware(BaseHTTPMiddleware):
             and not share_read
             and not any(path.startswith(p) for p in self.PUBLIC_PATHS)
         )
-        if needs_auth and not token_is_valid(self._provided_token(request)):
+        if needs_auth:
+            if token_is_valid(self._provided_token(request)):
+                return await call_next(request)
+            # Keyless path for the site's own users: the browser received
+            # this HttpOnly SameSite=Strict cookie when it loaded the SPA.
+            # Per-IP rate limits still apply.
+            session = request.cookies.get(SITE_SESSION_COOKIE, "")
+            if session_token_is_valid(session):
+                return await call_next(request)
             return JSONResponse(
                 {"detail": "Invalid or missing API key (X-API-Key header)."},
                 status_code=401,

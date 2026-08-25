@@ -24,7 +24,9 @@ def anyio_backend():
 @pytest.fixture
 async def client():
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+    # https:// — the session cookie is Secure-flagged and httpx only sends
+    # Secure cookies over https (the app always runs behind TLS in prod).
+    async with AsyncClient(transport=transport, base_url="https://test") as ac:
         yield ac
 
 
@@ -180,6 +182,36 @@ async def test_rate_limit_429(client):
     assert 429 in statuses, f"Expected at least one 429, got: {statuses}"
     # First 10 must succeed (200) — the limit must not lock out early.
     assert statuses[0] == 200, f"First request should succeed, got {statuses[0]}"
+
+
+# ── Site-session cookie (keyless site usage) ─────────────────────
+@pytest.mark.anyio
+async def test_session_cookie_grants_access(client):
+    # Loading the SPA issues the cg_session cookie
+    r = await client.get("/")
+    set_cookie = r.headers.get("set-cookie", "")
+    assert set_cookie.startswith("cg_session=")
+    # The cookie authorizes /api/analyze without any X-API-Key
+    r2 = await client.post("/api/analyze", json={"language": "python", "code": "x=1"})
+    assert r2.status_code != 401, (
+        f"Session cookie should authorize site usage, got {r2.status_code}: {r2.text}"
+    )
+
+
+@pytest.mark.anyio
+async def test_forged_session_cookie_rejected(client):
+    r = await client.post(
+        "/api/analyze",
+        json={"language": "python", "code": "x=1"},
+        cookies={"cg_session": "9999999999." + "a" * 64},
+    )
+    assert r.status_code == 401
+
+
+@pytest.mark.anyio
+async def test_no_key_no_cookie_returns_401(client):
+    r = await client.post("/api/analyze", json={"language": "python", "code": "x=1"})
+    assert r.status_code == 401
 
 
 # ── Startup fails without token ───────────────────────────────────

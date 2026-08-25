@@ -19,6 +19,9 @@ from security import (
     BodySizeLimitMiddleware,
     DocsProtectionMiddleware,
     SecurityHeadersMiddleware,
+    SITE_SESSION_COOKIE,
+    SITE_SESSION_TTL_SECONDS,
+    issue_session_token,
     validate_security_env,
 )
 from rate_limit import limiter
@@ -97,9 +100,23 @@ if os.path.isdir(FRONTEND_BUILD):
 
     @app.get("/{full_path:path}")
     def serve_frontend(full_path: str):
+        def spa_response():
+            # Every SPA load (re)issues the first-party session cookie that
+            # authorizes keyless site usage of /api/* from this browser.
+            response = FileResponse(os.path.join(FRONTEND_BUILD, "index.html"))
+            response.set_cookie(
+                SITE_SESSION_COOKIE,
+                issue_session_token(),
+                max_age=SITE_SESSION_TTL_SECONDS,
+                httponly=True,
+                samesite="strict",
+                secure=True,
+            )
+            return response
+
         # Reject obvious path-traversal attempts before normpath.
         if ".." in full_path:
-            return FileResponse(os.path.join(FRONTEND_BUILD, "index.html"))
+            return spa_response()
         candidate = os.path.normpath(os.path.join(FRONTEND_BUILD, full_path))
         if (
             full_path
@@ -107,7 +124,7 @@ if os.path.isdir(FRONTEND_BUILD):
             and os.path.isfile(candidate)
         ):
             return FileResponse(candidate)
-        return FileResponse(os.path.join(FRONTEND_BUILD, "index.html"))
+        return spa_response()
 
 
 if __name__ == "__main__":
