@@ -146,8 +146,9 @@ async def create_share(request: Request, body: ShareCreate):
 async def get_share(request: Request, token: str):
     verified = _verify_token(token)
     if not verified:
-        # Tampered or malformed: indistinguishable from "not found".
-        raise HTTPException(status_code=404, detail="Share link not found or expired.")
+        # Tampered or malformed: same generic response as not-found/expired,
+        # with no hint about whether the token was ever valid or has a TTL.
+        raise HTTPException(status_code=404, detail="Share link not found.")
     nonce, _ = verified
     with _db() as conn:
         row = conn.execute(
