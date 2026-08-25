@@ -10,11 +10,16 @@ Hardening measures:
 import ipaddress
 import re
 import socket
+from urllib.parse import urlsplit
 import httpx
 from services.glm_service import call_glm
 
 MAX_HTML_CHARS = 15000
 MAX_READ_BYTES = 200_000
+
+# Only standard web ports may be scanned; arbitrary ports would turn the
+# scanner into an external port-probing service.
+ALLOWED_PORTS = {80, 443}
 
 URL_SYSTEM_PROMPT = """You are an educational web-security assessment assistant for security learners and bug bounty researchers. You receive observations from ONE passive GET request to a URL: final URL, status code, response headers, and a truncated HTML excerpt. Based ONLY on these observations, produce an educational security assessment.
 
@@ -105,8 +110,22 @@ def validate_url(url: str) -> str:
         raise ValueError("URL is too long.")
     if not re.match(r"^https?://[^\s]+$", url, re.IGNORECASE):
         raise ValueError("URL must start with http:// or https:// and contain no spaces.")
-    host = re.sub(r"^https?://", "", url, flags=re.IGNORECASE)
-    host = host.split("/")[0].split(":")[0].strip("[]")
+
+    parts = urlsplit(url)
+    host = (parts.hostname or "").strip("[]")
+    if not host:
+        raise ValueError("URL must include a hostname.")
+
+    # Embedded credentials (http://user:pass@host/) are never legitimate
+    # for a passive scanner and confuse downstream parsing.
+    if parts.username is not None or parts.password is not None:
+        raise ValueError("URLs with embedded credentials are not allowed.")
+
+    # Restrict to standard web ports (explicit :8080-style ports would turn
+    # the scanner into a port probe). urlsplit raises ValueError on a
+    # malformed port, which is exactly what we want here.
+    if parts.port is not None and parts.port not in ALLOWED_PORTS:
+        raise ValueError("Only ports 80 and 443 may be scanned.")
 
     # Fast path for literal IPs, then full DNS resolution check.
     try:
@@ -124,6 +143,12 @@ def validate_url(url: str) -> str:
 
 async def collect_observations(url: str) -> dict:
     headers = {"User-Agent": "CodeGuardAI/2.0 (Educational security analysis)"}
+    # Re-validate immediately before the fetch. The route validates once on
+    # input; this second check shrinks the DNS-rebinding window (a hostname
+    # whose TTL flips between a public and a private answer between the two
+    # checks is far harder to exploit). Residual rebinding risk is accepted;
+    # a bulletproof fix requires pinning the connection to the validated IP.
+    url = validate_url(url)
     # Redirects are intentionally NOT followed: a public URL redirecting to an
     # internal address must never be fetched (SSRF via redirect).
     body = b""

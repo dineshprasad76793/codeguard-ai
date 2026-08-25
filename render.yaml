@@ -1,4 +1,4 @@
-# Render deployment configuration for CodeGuard AI v2
+# Render deployment configuration for CodeGuard AI v2.1
 services:
   - type: web
     name: codeguard-ai
@@ -19,11 +19,21 @@ services:
         value: z-ai/glm-4.7-flash
       - key: CORS_ORIGINS
         value: ""     # same-origin only (frontend served by this service)
+      # ── Security (all required in production) ──────────────────
       - key: CG_API_TOKEN
-        sync: false  # optional: set to require X-API-Key on all API calls
+        sync: false  # REQUIRED — set a long random value. Generate:
+                     #   python -c "import secrets; print(secrets.token_hex(32))"
+                     # Comma-separate multiple keys for rotation:
+                     #   key1,key2
+      - key: REQUIRE_API_AUTH
+        value: "true"  # set "false" ONLY for local development
       - key: DOCS_ENABLED
         value: "false"  # /docs, /redoc, /openapi.json return 404 in production
       - key: SHARE_SECRET
-        sync: false  # optional: stable HMAC secret for share links
+        sync: false  # REQUIRED — stable HMAC secret for share links.
+                     # Generate: python -c "import secrets; print(secrets.token_hex(32))"
       - key: SHARE_TTL_SECONDS
-        value: 86400
+        value: "86400"
+      # ── Rate limiting (optional — in-memory fallback works for single instance) ──
+      - key: REDIS_URL
+        sync: false  # e.g. redis://red-xxxx.upstash.io:6379 for multi-instance / persistent

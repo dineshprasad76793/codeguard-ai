@@ -132,9 +132,11 @@ function App() {
   };
 
   const request = async (endpoint, body) => {
+    const headers = { 'Content-Type': 'application/json' };
+    if (apiKey) headers['X-API-Key'] = apiKey;
     const response = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(body),
     });
     const data = await response.json().catch(() => ({}));
@@ -464,7 +466,7 @@ function App() {
           )}
 
           <div className="api-key-row">
-            <label htmlFor="api-key">API key (optional)</label>
+            <label htmlFor="api-key">API key</label>
             <input
               id="api-key"
               type="password"

@@ -7,14 +7,18 @@ so they survive server sleep/wake cycles and can be revoked/expired.
 import base64
 import hashlib
 import hmac
+import logging
 import os
 import re
 import secrets
 import sqlite3
 import time
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from models.schema import AnalyzeResponse
+from rate_limit import limiter
+
+logger = logging.getLogger("codeguard.share")
 
 router = APIRouter()
 
@@ -23,10 +27,13 @@ MAX_SHARES = 200
 MAX_ANALYSIS_CHARS = 60_000
 TTL_SECONDS = int(os.getenv("SHARE_TTL_SECONDS", 86400))  # 24h default
 
-# Falls back to a per-process random secret if SHARE_SECRET is unset.
-# NOTE: with the fallback, tokens stop validating after a restart —
-# set SHARE_SECRET in production for stable signatures.
-SHARE_SECRET = os.getenv("SHARE_SECRET", "") or secrets.token_hex(32)
+_share_secret_env = os.getenv("SHARE_SECRET", "")
+if not _share_secret_env:
+    logger.warning(
+        "SHARE_SECRET is not set. Share tokens will not survive server "
+        "restarts. Generate one with:  python -c \"import secrets; print(secrets.token_hex(32))\""
+    )
+SHARE_SECRET = _share_secret_env or secrets.token_hex(32)
 
 
 class ShareCreate(BaseModel):
@@ -115,7 +122,8 @@ def _prune(conn):
 
 
 @router.post("/api/share", response_model=ShareCreated)
-async def create_share(body: ShareCreate):
+@limiter.limit("10/minute")
+async def create_share(request: Request, body: ShareCreate):
     analysis = (body.analysis or "").strip()
     if not analysis:
         raise HTTPException(status_code=400, detail="Analysis cannot be empty.")
@@ -134,7 +142,8 @@ async def create_share(body: ShareCreate):
 
 
 @router.get("/api/share/{token}", response_model=AnalyzeResponse)
-async def get_share(token: str):
+@limiter.limit("30/minute")
+async def get_share(request: Request, token: str):
     verified = _verify_token(token)
     if not verified:
         # Tampered or malformed: indistinguishable from "not found".
@@ -145,10 +154,12 @@ async def get_share(token: str):
             "SELECT analysis, created FROM shares WHERE nonce = ?", (nonce,)
         ).fetchone()
     if not row:
-        raise HTTPException(status_code=404, detail="Share link not found or expired.")
+        raise HTTPException(status_code=404, detail="Share link not found.")
     analysis, created = row
     if time.time() - created > TTL_SECONDS:
         with _db() as conn:
             conn.execute("DELETE FROM shares WHERE nonce = ?", (nonce,))
-        raise HTTPException(status_code=410, detail="Share link has expired.")
+        # Return generic 404 — do NOT use 410 or mention expiration,
+        # which would confirm to an attacker that the token was valid.
+        raise HTTPException(status_code=404, detail="Share link not found.")
     return AnalyzeResponse(success=True, analysis=analysis)

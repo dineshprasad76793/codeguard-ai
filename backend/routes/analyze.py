@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 import httpx
 from models.schema import (
@@ -26,6 +26,7 @@ from services.github_service import (
     RepoNotFound,
 )
 from services.sanitizer import sanitize_custom_rules, RuleRejected
+from rate_limit import limiter
 
 router = APIRouter()
 
@@ -56,7 +57,8 @@ def _opts(req):
 
 
 @router.post("/api/analyze", response_model=AnalyzeResponse)
-async def analyze(req: AnalyzeRequest):
+@limiter.limit("6/minute")
+async def analyze(request: Request, req: AnalyzeRequest):
     if not req.code or not req.code.strip():
         raise HTTPException(status_code=400, detail="Code cannot be empty.")
     if len(req.code) > MAX_CODE_CHARS:
@@ -95,7 +97,8 @@ async def analyze(req: AnalyzeRequest):
 
 
 @router.post("/api/scan-url", response_model=AnalyzeResponse)
-async def scan_url(req: UrlScanRequest):
+@limiter.limit("8/minute")
+async def scan_url(request: Request, req: UrlScanRequest):
     try:
         url = validate_url(req.url)
     except ValueError as e:
@@ -129,7 +132,8 @@ async def scan_url(req: UrlScanRequest):
 
 
 @router.post("/api/scan-github", response_model=AnalyzeResponse)
-async def scan_github(req: GithubScanRequest):
+@limiter.limit("8/minute")
+async def scan_github(request: Request, req: GithubScanRequest):
     options = _opts(req)
     try:
         custom_rules = _clean_rules(req.custom_rules)

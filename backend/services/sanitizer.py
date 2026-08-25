@@ -7,8 +7,8 @@ limits are enforced.
 """
 import re
 
-MAX_RULES = 20
-MAX_RULE_LEN = 200
+MAX_RULES = 10
+MAX_RULE_LEN = 500
 
 # Prompt-injection signatures (case-insensitive). Matching rules are
 # rejected, not silently mangled — the user can rewrite them.
@@ -17,18 +17,30 @@ INJECTION_PATTERNS = [
     r"disregard\s+(all\s+|any\s+|the\s+)?(previous|prior|above|instructions)",
     r"forget\s+(all\s+|your\s+|the\s+)?(previous|prior|instructions|prompt)",
     r"system\s*prompt",
+    r"system\s+message",
     r"you\s+are\s+(now|no\s+longer)",
     r"act\s+as\s+(if|a|an)\b",
     r"pretend\s+(to\s+be|you\s+are)",
+    r"roleplay\s+as\b",
     r"new\s+instructions?\s*:",
     r"override\s+(your\s+|the\s+|all\s+)?instructions",
+    r"(reveal|show|print|display|expose|repeat)\s+your\s+"
+    r"(instructions?|prompts?|rules|system|initial\s+message)",
+    r"\bjailbreak\b",
+    r"\bdo\s+anything\s+now\b",
+    r"developer\s+mode",
+    r"\bnew\s+persona\b",
     r"</?\s*(system|assistant|user)\s*>",
     r"\bdeveloper\s+message\b",
     r"\bstop\s+analyzing\b",
-    r"respond\s+(only\s+)?with\s*[:\"]?\s*(yes|ok|done)\b",
+    r"respond\s+(only\s+)?with\s*[\":]?\s*(yes|ok|done)\b",
 ]
 
 _COMPILED = [re.compile(p, re.IGNORECASE) for p in INJECTION_PATTERNS]
+
+# Control characters (except \t and \n) have no place in a search hint and
+# are used for tokenizer-level injection tricks.
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 class RuleRejected(ValueError):
@@ -50,7 +62,7 @@ def sanitize_custom_rules(rules) -> list:
     for r in rules:
         if not isinstance(r, str):
             continue
-        r = r.strip()[:MAX_RULE_LEN]
+        r = _CONTROL_CHARS.sub("", r).strip()[:MAX_RULE_LEN]
         if not r:
             continue
         for pattern in _COMPILED:
