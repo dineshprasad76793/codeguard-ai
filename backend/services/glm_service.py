@@ -133,7 +133,7 @@ def build_user_prompt(language: str, code: str) -> str:
     )
 
 
-async def call_glm(system_prompt: str, user_prompt: str) -> str:
+async def call_glm(system_prompt: str, user_prompt: str, _retried: bool = False) -> str:
     if not GLM_API_KEY:
         return (
             "ERROR: GLM_API_KEY is not set. \n\n"
@@ -164,6 +164,10 @@ async def call_glm(system_prompt: str, user_prompt: str) -> str:
         data = response.json()
         message = data["choices"][0]["message"]
         content = _extract_content(message)
+        if not content and not _retried:
+            # Reasoning models occasionally return an empty completion;
+            # one immediate retry almost always resolves it.
+            return await call_glm(system_prompt, user_prompt, _retried=True)
         if not content:
             return "The AI returned an empty analysis. Please try again."
         return content
@@ -246,11 +250,13 @@ async def stream_glm(system_prompt: str, user_prompt: str):
             if fallback:
                 yield fallback
             else:
-                yield "ERROR: The analysis service is temporarily unavailable. Please try again."
+                # Last resort: one synchronous retry (it retries internally
+                # on empty completions too) before surfacing an error.
+                yield await call_glm(system_prompt, user_prompt)
         return
     if not emitted:
         fallback = reasoning_acc.strip()
         if fallback:
             yield fallback
         else:
-            yield "ERROR: The AI returned an empty analysis. Please try again."
+            yield await call_glm(system_prompt, user_prompt)

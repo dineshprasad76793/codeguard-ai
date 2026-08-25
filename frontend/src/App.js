@@ -477,17 +477,10 @@ function App() {
             </>
           )}
 
-          <div className="api-key-row">
-            <label htmlFor="api-key">API key (optional)</label>
-            <input
-              id="api-key"
-              type="password"
-              placeholder="Optional — only needed for direct API calls"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              autoComplete="off"
-            />
-          </div>
+          {/* API key field removed from the UI: the server-issued session
+              cookie authorizes site usage, so visitors never need a key.
+              The apiKey state + X-API-Key header logic is kept so a key
+              previously saved in localStorage keeps working silently. */}
 
           <HistoryPanel
             history={history}
