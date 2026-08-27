@@ -37,3 +37,7 @@ const DB_PASSWORD = 'example';
 
 // safe parsing — never unsafe deserialization
 const cfg = JSON.parse(process.env.CONFIG_JSON || '{}');
+
+// logging a variable — never a hardcoded-secret finding
+console.log("API token:", apiKey);
+logger.info("user", req.user.id);

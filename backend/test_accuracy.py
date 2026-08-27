@@ -269,6 +269,74 @@ def test_user_prompt_masks_real_secrets_end_to_end():
     assert "sk-" in up and "4c" in up  # masked form retained
 
 
+# ── v2.5 detector additions ────────────────────────────────────────
+
+def test_console_log_variable_not_hardcoded_secret():
+    code = 'console.log("API token:", apiKey)'
+    h = hints_for(code, "javascript")
+    assert "possible-secret" not in h
+
+
+def test_log_statement_with_literal_is_logging_concern():
+    code = 'logger.info("token=" + "9f8e7d6c5b4a3f2e1d0c9b8a")'
+    h = hints_for(code, "python")
+    assert "possible-secret" not in h
+    assert "secret-in-log-statement" in h
+
+
+def test_weak_hash_password_context():
+    code = 'pwd_hash = md5(password)'
+    h = hints_for(code, "python")
+    wh = [x for x in analyze_code(code, "python").hints if x.type == "weak-hash"]
+    assert "weak-hash" in h and wh[0].confidence == "High"
+
+
+def test_weak_hash_non_security_context_low():
+    code = 'etag = md5(content)'
+    wh = [x for x in analyze_code(code, "python").hints if x.type == "weak-hash"]
+    assert wh and wh[0].confidence == "Medium"
+
+
+def test_math_random_with_token_context_flagged():
+    code = "const resetToken = Math.random().toString(36)"
+    h = hints_for(code, "javascript")
+    assert "weak-randomness-security-use" in h
+    assert "weak-randomness-general" not in h
+
+
+def test_math_random_general_not_security():
+    code = "const dice = Math.floor(Math.random() * 6) + 1"
+    h = hints_for(code, "javascript")
+    assert "weak-randomness-security-use" not in h
+
+
+def test_cors_wildcard_with_credentials():
+    code = """
+app.use(cors({ origin: '*', credentials: true }));
+"""
+    assert "cors-wildcard-with-credentials" in hints_for(code, "javascript")
+
+
+def test_cors_wildcard_alone_is_hardening():
+    code = 'res.set("Access-Control-Allow-Origin", "*")'
+    h = hints_for(code, "javascript")
+    assert "cors-wildcard" in h
+    assert "cors-wildcard-with-credentials" not in h
+
+
+# ── prompt-contract additions (v2.5) ───────────────────────────────
+
+def test_prompt_cvss_and_no_findings_wording():
+    for needle in (
+        "Not enough information",
+        "No high-confidence vulnerabilities were detected by this static analysis",
+        "False Positive Analysis:",
+        "DEDUPLICATION",
+        "never merely a variable name containing password",
+    ):
+        assert needle in CODE_SYSTEM_PROMPT, f"missing rule: {needle}"
+
+
 def test_user_prompt_includes_evidence():
     up = build_user_prompt("python", "x = pickle.loads(data)")
     assert "STATIC-ANALYSIS EVIDENCE" in up

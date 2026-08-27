@@ -56,6 +56,38 @@ SECRET_PATTERNS = [
 
 ENTROPYISH_RE = re.compile(r"^[A-Za-z0-9+/_\-]{16,}$")
 
+# Logging statements never count as hardcoded secrets: a variable NAME
+# being logged (console.log("API token:", apiKey)) is not a credential
+# literal, and even a real token inside a log call is a *logging* finding.
+LOG_LINE_RE = re.compile(
+    r"""\bconsole\.(?:log|debug|info|warn|error|trace)\s*\(|\bprint\s*\(|\bprintf\s*\(|
+        \blog(?:ger)?\.(?:debug|info|warning|error|critical|trace)\s*\(|\blogging\.\w+\s*\(|
+        \bsyslog\s*\(|\bconsole\.dir\s*\(|\bwriteln\s*\(|\bSystem\.out\.print""",
+    re.VERBOSE)
+
+# Weak password-capable hashes (severity depends on usage context)
+WEAK_HASH_RE = re.compile(
+    r"""\b(?:hashlib\.)?md5\s*\(|\bMD5(?:_INIT)?\b|\bhashlib\.sha1\s*\(|\bsha1\s*\(|
+        createHash\s*\(\s*["'](?:md5|sha1)["']\s*\)|\bMessageDigest\.getInstance\s*\(\s*["'](?:MD5|SHA-1)["']""", re.VERBOSE)
+PASSWORD_CONTEXT_RE = re.compile(r"""password|passwd|pwd|pass_hash|user_pass|credential""", re.IGNORECASE)
+
+# Weak randomness — only relevant for security-sensitive values
+WEAK_RANDOM_RE = re.compile(
+    r"""\bMath\.random\s*\(\s*\)|\brandom\.random\s*\(\s*\)|\brandint\s*\(|\brandom\.randint|
+        \b(?:arc4random|drand48)\s*\(""", re.VERBOSE)
+RANDOM_SECURITY_CONTEXT_RE = re.compile(
+    r"""token|session|secret|api[_-]?key|otp|nonce|reset|csrf|salt|verification|
+        password|captcha|invite""", re.IGNORECASE | re.VERBOSE)
+
+# CORS configuration
+CORS_WILDCARD_RE = re.compile(
+    r"""Access-Control-Allow-Origin["']?\s*[:,]\s*["']\*["']|origin\s*:\s*["']\*["']|"""
+    r"""allowOrigin\s*:\s*["']\*["']|origins?\s*:\s*\[\s*["']\*["']""", re.VERBOSE)
+CORS_CREDENTIALS_RE = re.compile(
+    r"""Access-Control-Allow-Credentials["']?\s*[:,]\s*["']?(?:true|True)|"""
+    r"""credentials\s*:\s*true|allowCredentials\s*:\s*true|withCredentials\s*=\s*true""", re.VERBOSE)
+
+
 SQL_EXEC_RE = re.compile(
     r"""\.execute(?:Query|Update|Many|Scalar)?\s*\(|\bexecute\s*\(|\bquery\s*\(
         |\bdb\.query\b|\bcursor\.\w+\s*\(""", re.VERBOSE)
@@ -215,7 +247,16 @@ def analyze_code(code: str, language: str = "") -> Analysis:
         if not line or line.startswith(("#", "//", "/*", "*")):
             continue
 
-        # ── secrets ────────────────────────────────────────────────
+        # ── secrets (logging statements are never credential literals) ──
+        is_log_line = bool(LOG_LINE_RE.search(line))
+        if is_log_line:
+            entropy_literal = re.search(r"""["']([A-Za-z0-9+/_\-]{16,})["']""", line)
+            if entropy_literal and ENTROPYISH_RE.match(entropy_literal.group(1)):
+                res.add("secret-in-log-statement", i, line[:120],
+                        "a high-entropy literal appears inside a logging call — sensitive-"
+                        "logging concern, not a hardcoded credential assignment",
+                        confidence="Medium")
+            continue  # log lines are never hardcoded-credential assignments
         for pat, kind in SECRET_PATTERNS:
             m = pat.search(line)
             if m:
@@ -333,6 +374,47 @@ def analyze_code(code: str, language: str = "") -> Analysis:
             res.add("broad-error-handling", i, line,
                     "broad/empty exception handler — code quality unless it hides failures "
                     "or leaks data in the message", confidence="High")
+
+        # ── weak cryptography (context determines severity) ─────────
+        if WEAK_HASH_RE.search(line):
+            pw_ctx = bool(PASSWORD_CONTEXT_RE.search(line)) or any(
+                PASSWORD_CONTEXT_RE.search(lines[j])
+                for j in range(max(0, i - 6), min(len(lines), i + 6)))
+            res.add("weak-hash", i, line,
+                    "MD5/SHA-1 usage" + (
+                        " near password-handling context — weak password hashing if used "
+                        "for auth/storage" if pw_ctx else
+                        " — severity depends on whether it protects passwords or only "
+                        "checksums/non-security data"),
+                    confidence="High" if pw_ctx else "Medium")
+
+        # ── weak randomness (only when security-sensitive) ──────────
+        if WEAK_RANDOM_RE.search(line):
+            sec_ctx = bool(RANDOM_SECURITY_CONTEXT_RE.search(line)) or any(
+                RANDOM_SECURITY_CONTEXT_RE.search(lines[j])
+                for j in range(max(0, i - 4), min(len(lines), i + 4)))
+            if sec_ctx:
+                res.add("weak-randomness-security-use", i, line,
+                        "non-cryptographic randomness used near a token/session/secret "
+                        "context", confidence="Medium")
+            else:
+                res.add("weak-randomness-general", i, line,
+                        "Math.random-style usage with no visible security purpose — do NOT "
+                        "report as a vulnerability", confidence="High")
+
+        # ── CORS configuration ──────────────────────────────────────
+        if CORS_WILDCARD_RE.search(line):
+            with_cred = bool(CORS_CREDENTIALS_RE.search(joined))
+            if with_cred:
+                res.add("cors-wildcard-with-credentials", i, line,
+                        "wildcard CORS combined with credentials — browsers block this "
+                        "combo; verify the configuration intent", confidence="Medium")
+            else:
+                res.add("cors-wildcard", i, line,
+                        "wildcard CORS origin — hardening concern unless sensitive "
+                        "endpoints/authenticated responses are exposed cross-origin",
+                        confidence="Low")
+
         if AUTH_MARKER_RE.search(line):
             res.add("auth-marker", i, line,
                     "authentication/authorization control present", confidence="Low")

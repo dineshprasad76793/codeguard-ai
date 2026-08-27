@@ -55,9 +55,10 @@ const FIELD_LABELS = [
   'Category', 'Severity', 'Confidence', 'File', 'Line', 'Evidence', 'Data Flow',
   'Why It Matters', 'Why it is a problem', 'Why It Was Detected',
   'Recommended Fix', 'Recommendation', 'Manual Verification Required',
+  'False Positive Analysis',
   'Why this is not necessarily a vulnerability',
   'Vulnerable Code', 'Fixed Code', 'Explanation', 'Location', 'OWASP',
-  'CVSS Estimate',
+  'CVSS Estimate', 'CVSS',
 ];
 const ANY_LABEL_RE = new RegExp(
   '^\\s*(?:' + FIELD_LABELS.map(esc).join('|') + ')\\s*:',
@@ -160,6 +161,11 @@ export function parseReport(text) {
         grabField(block, 'Why it is a problem'),
       whyDetected: grabField(block, 'Why It Was Detected') || null,
       manualVerification: grabField(block, 'Manual Verification Required') || null,
+      fpAnalysis: grabField(block, 'False Positive Analysis') || null,
+      cvssRaw:
+        grabField(block, 'CVSS') ||
+        block.match(/CVSS Estimate:\s*([^\n]+)/i)?.[1] ||
+        null,
       whyNotVuln: grabField(block, 'Why this is not necessarily a vulnerability') || null,
       recommendation:
         grabField(block, 'Recommended Fix') || grabField(block, 'Recommendation'),

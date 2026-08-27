@@ -341,6 +341,12 @@ export default function ReportView({
                   {f.whyDetected}
                 </p>
               )}
+              {f.fpAnalysis && (
+                <p className="finding-text why-not-vuln">
+                  <strong>False positive analysis: </strong>
+                  {f.fpAnalysis}
+                </p>
+              )}
               {f.whyNotVuln && (
                 <p className="finding-text why-not-vuln">
                   <strong>Why this is not necessarily a vulnerability: </strong>
@@ -360,6 +366,17 @@ export default function ReportView({
                     {f.manualVerification}
                   </p>
                 )}
+              {f.cvssRaw && !/not enough/i.test(f.cvssRaw) && f.cvss === null && (
+                <p className="finding-text muted">
+                  <strong>CVSS: </strong>
+                  {f.cvssRaw}
+                </p>
+              )}
+              {f.cvssRaw && /not enough/i.test(f.cvssRaw) && (
+                <p className="finding-text muted">
+                  <strong>CVSS: </strong>Not enough information — severity + confidence shown above
+                </p>
+              )}
               {f.vulnCode && (
                 <div className="code-pair">
                   <div className="code-block bad">
