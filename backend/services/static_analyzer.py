@@ -242,11 +242,16 @@ def analyze_code(code: str, language: str = "") -> Analysis:
         if CMD_SINK_RE.search(line):
             arg = re.search(r"\((.*)\)", line)
             argval = arg.group(1).strip() if arg else ""
-            list_args = argval.startswith("[") and "shell" not in line
+            # Safe forms: single literal, list-literal args, or any
+            # argument expression containing ONLY literals/lists (no
+            # concatenation / interpolation / template syntax).
+            static_expr = not re.search(r"""\+|\$\{|\.format\s*\(|%\s*\(""", argval)
             fixed = (
                 bool(STRING_LITERAL_RE.match(argval))
-                or list_args
+                or (argval.startswith("[") and "shell" not in line)
                 or bool(re.match(r"""^["'][^"'${]+["']$""", argval))
+                or (static_expr and bool(re.fullmatch(
+                    r"""[A-Za-z0-9_'"\s,\[\]\(\)\.-]+""", argval)))
             )
             if fixed:
                 res.add("commandSink-fixed", i, line,
