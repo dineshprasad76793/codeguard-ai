@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { cvssClass, scoreClass } from '../lib/parse';
+import { cvssClass, scoreClass, CATEGORY_ORDER } from '../lib/parse';
 import { SEVERITY_ORDER } from '../lib/constants';
 import {
   buildJSON,
@@ -21,6 +21,24 @@ const SEV_CHIP_CLASS = {
   Custom: 'sev-custom',
 };
 
+const CAT_CHIP_CLASS = {
+  'Confirmed Vulnerability': 'cat-confirmed',
+  'Potential Vulnerability': 'cat-potential',
+  'Security Hardening': 'cat-hardening',
+  'Code Quality': 'cat-quality',
+  Informational: 'cat-informational',
+};
+
+const CAT_SHORT = {
+  'Confirmed Vulnerability': 'Confirmed',
+  'Potential Vulnerability': 'Potential',
+  'Security Hardening': 'Hardening',
+  'Code Quality': 'Quality',
+  Informational: 'Info',
+};
+
+const CONF_CHIP_CLASS = { High: 'conf-high', Medium: 'conf-medium', Low: 'conf-low' };
+
 export default function ReportView({
   report,
   meta,
@@ -32,6 +50,7 @@ export default function ReportView({
   shareUrl,
 }) {
   const [filter, setFilter] = useState('All');
+  const [categoryFilter, setCategoryFilter] = useState('All');
   const [showBadge, setShowBadge] = useState(false);
   const [copied, setCopied] = useState('');
 
@@ -39,9 +58,12 @@ export default function ReportView({
   const visible = useMemo(
     () =>
       allFindings.filter(
-        (f) => !hiddenFps.includes(f.id) && (filter === 'All' || f.severity === filter)
+        (f) =>
+          !hiddenFps.includes(f.id) &&
+          (filter === 'All' || f.severity === filter) &&
+          (categoryFilter === 'All' || f.category === categoryFilter)
       ),
-    [allFindings, hiddenFps, filter]
+    [allFindings, hiddenFps, filter, categoryFilter]
   );
 
   const counts = useMemo(() => {
@@ -50,10 +72,17 @@ export default function ReportView({
     return c;
   }, [allFindings]);
 
+  const catCounts = useMemo(() => {
+    const c = { All: allFindings.length };
+    for (const f of allFindings) if (f.category) c[f.category] = (c[f.category] || 0) + 1;
+    return c;
+  }, [allFindings]);
+
   const sorted = useMemo(
     () =>
       [...visible].sort(
         (a, b) =>
+          (CATEGORY_ORDER.indexOf(a.category) ?? 9) - (CATEGORY_ORDER.indexOf(b.category) ?? 9) ||
           (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9) ||
           (b.cvss ?? -1) - (a.cvss ?? -1)
       ),
@@ -190,6 +219,16 @@ export default function ReportView({
         </div>
       )}
 
+      {report.categoryCounts && (
+        <div className="category-summary">
+          {CATEGORY_ORDER.filter((c) => report.categoryCounts[c] > 0).map((c) => (
+            <span key={c} className={'cat-badge ' + (CAT_CHIP_CLASS[c] || '')}>
+              {CAT_SHORT[c]}: {report.categoryCounts[c]}
+            </span>
+          ))}
+        </div>
+      )}
+
       {allFindings.length > 0 && (
         <div className="filter-row">
           {FILTERS.filter((f) => counts[f]).map((f) => (
@@ -209,6 +248,22 @@ export default function ReportView({
         </div>
       )}
 
+      {catCounts.All > 0 && Object.keys(catCounts).length > 2 && (
+        <div className="filter-row">
+          {['All', ...CATEGORY_ORDER]
+            .filter((c) => catCounts[c])
+            .map((c) => (
+              <button
+                key={c}
+                className={'filter-chip cat-chip' + (categoryFilter === c ? ' active' : '')}
+                onClick={() => setCategoryFilter(c)}
+              >
+                {c === 'All' ? 'All categories' : CAT_SHORT[c] || c} ({catCounts[c]})
+              </button>
+            ))}
+        </div>
+      )}
+
       {sorted.length > 0 ? (
         <div className="findings">
           {sorted.map((f) => (
@@ -217,6 +272,19 @@ export default function ReportView({
                 <span className={'sev-badge ' + (SEV_CHIP_CLASS[f.severity] || '')}>
                   {f.severity}
                 </span>
+                {f.category && (
+                  <span className={'cat-badge ' + (CAT_CHIP_CLASS[f.category] || '')}>
+                    {CAT_SHORT[f.category] || f.category}
+                  </span>
+                )}
+                {f.confidence && (
+                  <span
+                    className={'conf-badge ' + (CONF_CHIP_CLASS[f.confidence] || '')}
+                    title="Static-analysis confidence"
+                  >
+                    {f.confidence} conf.
+                  </span>
+                )}
                 {f.cvss !== null && f.cvss !== undefined && (
                   <span
                     className={'cvss-badge ' + cvssClass(f.cvss)}
@@ -226,6 +294,7 @@ export default function ReportView({
                   </span>
                 )}
                 <span className="finding-title">{f.title}</span>
+                {f.file && <span className="finding-file">{f.file}</span>}
                 {f.line && (
                   <button
                     className="line-link"
@@ -245,11 +314,37 @@ export default function ReportView({
                 </button>
               </div>
               {f.location && <div className="finding-location">{f.location}</div>}
-              {f.explanation && <p className="finding-text">{f.explanation}</p>}
+              {f.evidence && (
+                <p className="finding-text">
+                  <strong>Evidence: </strong>
+                  {f.evidence}
+                </p>
+              )}
+              {f.dataFlow && f.dataFlow !== 'N/A' && (
+                <p className="finding-text data-flow">
+                  <strong>Data flow: </strong>
+                  {f.dataFlow}
+                </p>
+              )}
+              {f.explanation && !f.evidence && (
+                <p className="finding-text">{f.explanation}</p>
+              )}
               {f.why && (
                 <p className="finding-text">
                   <strong>Why it matters: </strong>
                   {f.why}
+                </p>
+              )}
+              {f.whyDetected && (
+                <p className="finding-text muted">
+                  <strong>Why detected: </strong>
+                  {f.whyDetected}
+                </p>
+              )}
+              {f.whyNotVuln && (
+                <p className="finding-text why-not-vuln">
+                  <strong>Why this is not necessarily a vulnerability: </strong>
+                  {f.whyNotVuln}
                 </p>
               )}
               {f.recommendation && (
@@ -258,6 +353,13 @@ export default function ReportView({
                   {f.recommendation}
                 </p>
               )}
+              {f.manualVerification &&
+                !/^no\b/i.test(f.manualVerification.trim()) && (
+                  <p className="finding-text manual-verify">
+                    <strong>Manual verification required: </strong>
+                    {f.manualVerification}
+                  </p>
+                )}
               {f.vulnCode && (
                 <div className="code-pair">
                   <div className="code-block bad">
