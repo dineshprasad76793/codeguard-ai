@@ -143,6 +143,17 @@ def mask_secret(value: str) -> str:
     return f"{v[:3]}{'*' * (len(v) - 5)}{v[-2:]}"
 
 
+def _secret_is_placeholder(value: str, var_name: str) -> bool:
+    if PLACEHOLDER_RE.search(value):
+        return True
+    if value.strip().lower().replace("_", "") == var_name.strip().lower().replace("_", ""):
+        return True
+    if not ENTROPYISH_RE.match(value):
+        if len(value) < 8 or (value.lower() == value and value.isalpha()):
+            return True
+    return False
+
+
 @dataclass
 class Hint:
     type: str
@@ -166,17 +177,27 @@ class Analysis:
         self.hints.append(Hint(*args, **kwargs))
 
 
-def _secret_is_placeholder(value: str, var_name: str) -> bool:
-    if PLACEHOLDER_RE.search(value):
-        return True
-    # value equals/derives from the variable name itself (secret = SECRET)
-    if value.strip().lower().replace("_", "") == var_name.strip().lower().replace("_", ""):
-        return True
-    if not ENTROPYISH_RE.match(value):
-        # long values must at least look keyed; short human words are placeholders
-        if len(value) < 8 or value.lower() == value and value.isalpha():
-            return True
-    return False
+def redact_secrets(code: str) -> str:
+    """Replace real-looking secret VALUES in the source with masked forms
+    before the code is sent to the AI. Placeholders are left intact so the
+    AI can still discuss them as non-secrets. Line structure is preserved."""
+    def sub_line(line: str) -> str:
+        for pat, _kind in SECRET_PATTERNS:
+            m = pat.search(line)
+            if not m:
+                continue
+            inner = re.search(r"""["']([^"']{6,})["']""", m.group(0))
+            if not inner:
+                return line  # block-style keys have no quoted value
+            value = inner.group(1)
+            var = re.search(r"""([A-Za-z_][A-Za-z0-9_]*)\s*[=:]""",
+                            line[:m.start()] + m.group(0))
+            var_name = var.group(1) if var else "secret"
+            if not _secret_is_placeholder(value, var_name):
+                line = line.replace(value, mask_secret(value))
+        return line
+
+    return chr(10).join(sub_line(l) for l in code.splitlines())
 
 
 def analyze_code(code: str, language: str = "") -> Analysis:

@@ -252,6 +252,23 @@ def test_url_prompt_header_semantics():
         assert needle in URL_SYSTEM_PROMPT, f"missing rule in URL prompt: {needle}"
 
 
+def test_user_prompt_masks_real_secrets_end_to_end():
+    from services.glm_service import build_user_prompt as bup
+    secret = "sk-live-9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c"
+    up = bup("python", f'ADMIN_TOKEN = "{secret}"\nx = 1')
+    assert secret not in up, "full secret reached the AI prompt"
+    assert "sk-" in up and "4c" in up  # masked form retained
+    assert "<user_code>" in up
+
+
+def test_user_prompt_masks_real_secrets_end_to_end():
+    from services.glm_service import build_user_prompt as bup
+    secret = "sk-live-9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c"
+    up = bup("python", f'ADMIN_TOKEN = "{secret}"\nx = 1')
+    assert secret not in up, "full secret reached the AI prompt"
+    assert "sk-" in up and "4c" in up  # masked form retained
+
+
 def test_user_prompt_includes_evidence():
     up = build_user_prompt("python", "x = pickle.loads(data)")
     assert "STATIC-ANALYSIS EVIDENCE" in up

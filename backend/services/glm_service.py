@@ -150,12 +150,17 @@ def build_system_prompt(options=None, custom_rules=None):
 
 
 def build_user_prompt(language: str, code: str) -> str:
-    from services.static_analyzer import analyze_code, evidence_block
+    from services.static_analyzer import analyze_code, evidence_block, redact_secrets
     analysis = analyze_code(code, language)
+    # Deterministic secret masking: the AI must never receive (and therefore
+    # cannot echo) a full credential value.
+    code = redact_secrets(code)
     return (
         f"Programming Language: {language}\n\n"
         f"{evidence_block(analysis)}\n\n"
-        f"Analyze the following code:\n\n<user_code>\n{code}\n</user_code>"
+        f"Analyze the following code (real-looking secret values are already "
+        f"masked; the evidence block cites their lines):\n\n"
+        f"<user_code>\n{code}\n</user_code>"
     )
 
 
