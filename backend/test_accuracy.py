@@ -364,6 +364,67 @@ def test_model_chain_order(monkeypatch):
     assert g.MODEL_CHAIN[-1] == "z-ai/glm-5.3-flash"
 
 
+# ── v2.6 safe-code recognition ─────────────────────────────────────
+
+def test_crypto_randombytes_not_flagged():
+    code = "const token = crypto.randomBytes(32).toString('hex')"
+    h = hints_for(code, "javascript")
+    assert "weak-randomness-security-use" not in h
+    assert "weak-randomness-general" not in h
+    assert "secure-randomness" in h
+
+
+def test_secrets_token_urlsafe_recognized():
+    code = "reset = secrets.token_urlsafe(32)"
+    h = hints_for(code, "python")
+    assert "secure-randomness" in h
+    assert "possible-secret" not in h
+
+
+def test_math_random_still_flagged_near_token():
+    code = "const resetToken = Math.random().toString(36)"
+    h = hints_for(code, "javascript")
+    assert "weak-randomness-security-use" in h
+
+
+def test_textcontent_is_safe_sink():
+    code = "el.textContent = req.query.name;"
+    h = hints_for(code, "javascript")
+    assert "htmlSink-unsanitized" not in h
+
+
+def test_path_resolve_boundary_is_mitigation():
+    code = """
+const filePath = path.resolve(BASE_DIR, req.query.name);
+if (!filePath.startsWith(BASE_DIR)) return res.status(403).end();
+fs.readFile(filePath, cb);
+"""
+    analysis = analyze_code(code, "javascript")
+    types = {h.type for h in analysis.hints}
+    assert "path-boundary-check" in types
+
+
+def test_path_boundary_marker_present_in_evidence():
+    code = 'p = os.path.abspath(os.path.join(BASE, name))\nif not p.startswith(BASE): abort(403)\nopen(p)'
+    block = evidence_block(analyze_code(code, "python"))
+    assert "path-boundary-check" in block
+
+
+# ── v2.6 prompt-contract additions ─────────────────────────────────
+
+def test_prompt_confidence_enum_and_safe_apis():
+    for needle in (
+        "never \"false confidence\"",
+        "crypto.randomBytes",
+        "textContent",
+        "execFile/child_process with a fixed binary",
+        "base-directory boundary check",
+        "REPORT CONSISTENCY",
+        "must exactly equal the findings you list",
+    ):
+        assert needle in CODE_SYSTEM_PROMPT, f"missing rule: {needle}"
+
+
 def test_user_prompt_includes_evidence():
     up = build_user_prompt("python", "x = pickle.loads(data)")
     assert "STATIC-ANALYSIS EVIDENCE" in up

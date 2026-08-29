@@ -79,6 +79,20 @@ RANDOM_SECURITY_CONTEXT_RE = re.compile(
     r"""token|session|secret|api[_-]?key|otp|nonce|reset|csrf|salt|verification|
         password|captcha|invite""", re.IGNORECASE | re.VERBOSE)
 
+# Cryptographically secure randomness — a positive control, never a finding
+SECURE_RANDOM_RE = re.compile(
+    r"""\bcrypto\.randomBytes\s*\(|\bcrypto\.randomInt\s*\(|\bcrypto\.getRandomValues\s*\(|
+        \bsecrets\.token_(?:urlsafe|hex|bytes)\s*\(|\bsecrets\.randbelow\s*\(|
+        \brandom\.randbytes\s*\(|\bSecureRandom\b|\brandint\s*\(\s*0\s*,\s*\w+\s*\)\s*#?""",
+    re.VERBOSE)
+
+# Path-boundary validation — traversal mitigation when combined with path ops
+PATH_BOUNDARY_RE = re.compile(
+    r"""\bpath\.resolve\s*\(|\bpath\.abspath\s*\(|\babspath\s*\(|\brealpath(?:Sync)?\s*\(|\bpath\.normalize\s*\(|
+        \.startsWith\s*\(\s*\w*base|\.indexOf\s*\(\s*\w*base|\bos\.path\.commonprefix|
+        \brelative\s*\(\s*\w*base|\bstartswith\s*\(\s*\w*base|\bcommonprefix\s*\(""",
+    re.IGNORECASE | re.VERBOSE)
+
 # CORS configuration
 CORS_WILDCARD_RE = re.compile(
     r"""Access-Control-Allow-Origin["']?\s*[:,]\s*["']\*["']|origin\s*:\s*["']\*["']|"""
@@ -401,6 +415,17 @@ def analyze_code(code: str, language: str = "") -> Analysis:
                 res.add("weak-randomness-general", i, line,
                         "Math.random-style usage with no visible security purpose — do NOT "
                         "report as a vulnerability", confidence="High")
+        elif SECURE_RANDOM_RE.search(line):
+            res.add("secure-randomness", i, line,
+                    "cryptographically secure randomness — correct API choice; not a "
+                    "finding", confidence="High")
+
+        # ── path-boundary validation (positive traversal mitigation) ─
+        if PATH_BOUNDARY_RE.search(line) and not TRAVERSAL_RE.search(line):
+            res.add("path-boundary-check", i, line,
+                    "path resolution/normalization with a base-directory boundary — "
+                    "counts as traversal mitigation for nearby file operations",
+                    confidence="Medium")
 
         # ── CORS configuration ──────────────────────────────────────
         if CORS_WILDCARD_RE.search(line):

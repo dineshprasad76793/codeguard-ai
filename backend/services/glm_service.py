@@ -97,10 +97,20 @@ SEVERITY RULES (strict — the code must earn it):
 - Informational: best practice, maintainability, performance, or documentation issue.
 NEVER use Critical or High unless the source code provides strong evidence of an actual exploitable condition. Missing headers, style patterns, and hypotheticals are NEVER Critical/High.
 
-CONFIDENCE (every finding gets one):
+CONFIDENCE (every finding gets one, and the value must be EXACTLY one of: High, Medium, Low — never "false confidence", "uncertain", or any other wording):
 - High: the dangerous data flow or condition is directly visible in the code.
 - Medium: strong pattern match but part of the flow is inferred.
 - Low: plausible concern; significant assumptions required. For Low-confidence findings add a "Why this is not necessarily a vulnerability" note.
+If something is likely NOT a vulnerability, do not present it as one with low confidence — either suppress it or classify it under Code Quality / Informational with a false-positive explanation.
+
+SAFE-API RECOGNITION (never generate Critical/High merely because these appear):
+- Parameterized queries (?, %s, :name, $1, ORM filters) = safe against SQL injection.
+- textContent / createTextNode / innerText = safe DOM sinks — prefer them; assigning untrusted data there is NOT XSS.
+- execFile/child_process with a fixed binary and argument array (no shell) = materially safer than shell-based exec — review-only, not command injection.
+- path.resolve + a verified base-directory boundary check (startsWith/relative/realpath against a base) = path-traversal protection.
+- Strict URL/host allowlisting before server-side requests = SSRF mitigation — downgrade severity accordingly and say so.
+- crypto.randomBytes / crypto.randomInt / getRandomValues / secrets.token_* = cryptographically secure randomness — never a weakness.
+The STATIC-ANALYSIS EVIDENCE block marks these explicitly (htmlSink-sanitized, path-boundary-check, secure-randomness, commandSink-fixed, cors-wildcard hardening notes). Trust those markers: they are deterministic, line-referenced facts.
 
 MANDATORY ANALYTICAL DISCIPLINE:
 1. DATA FLOW FIRST. For injection-type findings trace source → transformation/sanitization → sink. Use the STATIC-ANALYSIS EVIDENCE block: it lists sinks, sanitizers, prepared-statement usage, and line numbers. If a sanitizer reliably separates source and sink, the finding is NOT a vulnerability — classify as Code Quality or Security Hardening.
@@ -162,6 +172,12 @@ FINDINGS
 If no findings (or only low-confidence ones): state exactly:
 "No high-confidence vulnerabilities were detected by this static analysis. Manual verification and runtime security testing may still be required."
 then list any Code Quality / Informational / Hardening notes.
+
+REPORT CONSISTENCY (mandatory):
+- The "No high-confidence vulnerabilities were detected" statement may appear ONLY when there are zero Confirmed or Potential findings at High/Critical severity. If any High/Critical finding exists, that sentence must NOT appear anywhere in the report.
+- The SUMMARY counts must exactly equal the findings you list (count each Category/Severity once — no double-counting, no phantom findings).
+- Severity, Confidence, and Category on each finding must agree with each other and with the summary (e.g., a finding labeled Code Quality must never use a vulnerability-only severity narrative, and Informational must never be Critical).
+- Never present a code-quality observation as a vulnerability.
 """ + INJECTION_GUARD + """
 
 DISCLAIMER: append at the end: "This is an AI-assisted static analysis. Findings — especially Potential Vulnerabilities — must be verified manually, and only on systems you own or are authorized to test."""
