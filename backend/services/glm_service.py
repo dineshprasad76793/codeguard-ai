@@ -20,6 +20,27 @@ GLM_MODEL = os.getenv("GLM_MODEL", "z-ai/glm-4.7-flash")
 MAX_TOKENS = int(os.getenv("GLM_MAX_TOKENS", "8192"))
 FALLBACK_MAX_TOKENS = int(os.getenv("GLM_FALLBACK_MAX_TOKENS", "4096"))
 
+# Model fallback chain: GLM_MODEL is tried first; on provider-side failures
+# (429 capacity, 402 balance, 404 unknown model, 5xx) the next models are
+# tried in order. Lets the app prefer a scarce free model while never
+# breaking when its capacity is exhausted.
+MODEL_CHAIN = [GLM_MODEL] + [
+    m.strip() for m in os.getenv("GLM_FALLBACK_MODELS", "").split(",") if m.strip()
+]
+
+
+def _is_provider_model_error(exc: Exception) -> bool:
+    """Provider-side model failures worth retrying on the next model in the
+    chain: 429 (capacity/rate limit), 402 (balance), 404 (model unavailable),
+    and 5xx upstream errors."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return False
+    if response.status_code in (402, 404, 429) or response.status_code >= 500:
+        return True
+    body = response.content or b""
+    return b"Provider returned error" in body
+
 
 def _is_token_budget_error(exc: Exception) -> bool:
     """OpenRouter 402/400 'fewer max_tokens' credit-budget rejection."""
@@ -191,13 +212,14 @@ def build_user_prompt(language: str, code: str) -> str:
 
 
 async def call_glm(system_prompt: str, user_prompt: str, _retried: bool = False,
-                   _max_tokens: int = None) -> str:
+                   _max_tokens: int = None, _model_index: int = 0) -> str:
     if not GLM_API_KEY:
         return (
             "ERROR: GLM_API_KEY is not set. \n\n"
             "Please add your API key to the .env file:\n"
             "  GLM_API_KEY=your_key_here"
         )
+    model = MODEL_CHAIN[min(_model_index, len(MODEL_CHAIN) - 1)]
 
     headers = {
         "Authorization": f"Bearer {GLM_API_KEY}",
@@ -207,7 +229,7 @@ async def call_glm(system_prompt: str, user_prompt: str, _retried: bool = False,
     }
 
     payload = {
-        "model": GLM_MODEL,
+        "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -227,7 +249,13 @@ async def call_glm(system_prompt: str, user_prompt: str, _retried: bool = False,
             # Free-tier keys reject max_tokens above the remaining credit
             # balance — retry once at the smaller budget.
             return await call_glm(system_prompt, user_prompt, _retried=True,
-                                  _max_tokens=FALLBACK_MAX_TOKENS)
+                                  _max_tokens=FALLBACK_MAX_TOKENS,
+                                  _model_index=_model_index)
+        if (_model_index + 1) < len(MODEL_CHAIN) and _is_provider_model_error(exc):
+            # Preferred model unavailable (capacity/balance) — silently
+            # continue down the fallback chain.
+            return await call_glm(system_prompt, user_prompt, _retried=_retried,
+                                  _model_index=_model_index + 1)
         raise
     content = _extract_content(message)
     if not content and not _retried:
@@ -251,7 +279,8 @@ async def analyze_code(
     )
 
 
-async def stream_glm(system_prompt: str, user_prompt: str, _budget_retried: bool = False):
+async def stream_glm(system_prompt: str, user_prompt: str, _budget_retried: bool = False,
+                     _model_index: int = 0):
     """Yield the AI answer piece by piece (SSE upstream, plain text downstream).
 
     Reasoning-model deltas arrive in `delta.content` (final answer) and
@@ -271,7 +300,7 @@ async def stream_glm(system_prompt: str, user_prompt: str, _budget_retried: bool
         "X-Title": "CodeGuard AI",
     }
     payload = {
-        "model": GLM_MODEL,
+        "model": MODEL_CHAIN[min(_model_index, len(MODEL_CHAIN) - 1)],
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -311,12 +340,22 @@ async def stream_glm(system_prompt: str, user_prompt: str, _budget_retried: bool
                     if think:
                         reasoning_acc += think
     except Exception as exc:
+        # Preferred model unavailable before any content was streamed
+        # (429 capacity / 402 balance / 5xx) — continue down the chain.
+        if (not emitted and (_model_index + 1) < len(MODEL_CHAIN)
+                and _is_provider_model_error(exc)):
+            async for piece in stream_glm(system_prompt, user_prompt,
+                                          _budget_retried=_budget_retried,
+                                          _model_index=_model_index + 1):
+                yield piece
+            return
         # Free-tier budget rejection: retry the whole stream at the smaller
         # budget before any fallback. The _budget_retried guard runs this
         # exactly once per stream_glm call chain.
         if (not emitted and not _budget_retried and _is_token_budget_error(exc)):
             async for piece in stream_glm(system_prompt, user_prompt,
-                                          _budget_retried=True):
+                                          _budget_retried=True,
+                                          _model_index=_model_index):
                 yield piece
             return
         if not emitted:
@@ -324,8 +363,8 @@ async def stream_glm(system_prompt: str, user_prompt: str, _budget_retried: bool
             if fallback:
                 yield fallback
             else:
-                # Last resort: one synchronous retry (it retries internally
-                # on empty completions and budget errors too). Guarded so a
+                # Last resort: one synchronous retry (it walks the model
+                # chain and retries on budget errors too). Guarded so a
                 # failure here can never produce an empty 200 response.
                 retry_text = await call_glm(system_prompt, user_prompt)
                 yield retry_text or ("ERROR: The analysis service is temporarily "

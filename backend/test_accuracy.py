@@ -337,6 +337,33 @@ def test_prompt_cvss_and_no_findings_wording():
         assert needle in CODE_SYSTEM_PROMPT, f"missing rule: {needle}"
 
 
+# ── v2.6 model fallback chain ──────────────────────────────────────
+
+def test_provider_error_detection():
+    import httpx
+    from services.glm_service import _is_provider_model_error
+
+    def fake(status, body=b""):
+        req = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+        return httpx.HTTPStatusError("err", request=req,
+                                     response=httpx.Response(status, request=req, content=body))
+
+    assert _is_provider_model_error(fake(429))
+    assert _is_provider_model_error(fake(402))
+    assert _is_provider_model_error(fake(404))
+    assert _is_provider_model_error(fake(503))
+    assert _is_provider_model_error(fake(400, b'{"error":{"message":"Provider returned error"}}'))
+    assert not _is_provider_model_error(fake(401))
+    assert not _is_provider_model_error(fake(400, b'{"error":{"message":"bad request"}}'))
+
+
+def test_model_chain_order(monkeypatch):
+    import services.glm_service as g
+    monkeypatch.setattr(g, "MODEL_CHAIN", ["z-ai/glm-5.2:free", "z-ai/glm-5.3-flash"])
+    assert g.MODEL_CHAIN[0] == "z-ai/glm-5.2:free"
+    assert g.MODEL_CHAIN[-1] == "z-ai/glm-5.3-flash"
+
+
 def test_user_prompt_includes_evidence():
     up = build_user_prompt("python", "x = pickle.loads(data)")
     assert "STATIC-ANALYSIS EVIDENCE" in up
