@@ -91,8 +91,8 @@ CLASSIFICATION RULES (every finding gets exactly one Category):
 
 SEVERITY RULES (strict — the code must earn it):
 - Critical: directly exploitable with potentially severe system compromise — remote code execution, command injection with direct execution, authentication bypass with severe impact, exploitable critical data compromise.
-- High: serious exploitable security weakness — SQL injection, XSS with meaningful impact, path traversal, SSRF with meaningful internal access, real hardcoded production credentials, dangerous deserialization of attacker-controlled data.
-- Medium: meaningful security weakness with contextual or exploitability limitations — sensitive password/token logging, open redirect, weak security configuration with realistic exploitability.
+- High: serious exploitable security weakness — SQL injection, XSS with meaningful impact, path traversal, SSRF with meaningful internal access, real hardcoded production credentials, dangerous deserialization of attacker-controlled data, weak password hashing used for password storage (MD5/SHA-1 on passwords).
+- Medium: meaningful security weakness with contextual or exploitability limitations — sensitive password/token logging, open redirect, IDOR, insecure TLS configuration, weak randomness used for security tokens, weak hashing for non-password purposes.
 - Low: minor security issue or defense-in-depth.
 - Info: best practice, placeholder/sample values, educational or demo code, comments, code-quality observations.
 NEVER use Critical or High unless the source code provides strong evidence of an actual exploitable condition — a keyword like "password", "token", "secret", "API_KEY", or "vulnerability" is never sufficient. Missing headers, style patterns, and hypotheticals are NEVER Critical/High.

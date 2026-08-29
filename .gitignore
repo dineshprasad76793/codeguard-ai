@@ -24,3 +24,4 @@ frontend/dist/
 test-pdf.mjs
 test-report.pdf
 shares.db
+.tmp_accept/

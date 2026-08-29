@@ -1,0 +1,146 @@
+// Final finding normalization + semantic deduplication layer.
+//
+// The AI report and the custom-rule engine can describe the SAME underlying
+// vulnerability with different titles ("Hardcoded production API key" vs
+// "Hardcoded production credential (custom rule match)"). This module maps
+// findings to normalized vulnerability IDs, merges semantically identical
+// ones (same type + same line/value), and drops placeholder noise.
+//
+// Different vulnerabilities on the same line stay separate: dedup only ever
+// merges findings that normalize to the same type.
+
+// Obvious sample values that must never surface as real credentials.
+const PLACEHOLDER_VALUE_RE =
+  /YOUR[_\s-]?API[_\s-]?KEY|YOUR[_\s-]?TOKEN|CHANGE[_-]?ME|REPLACE[_-]?ME|INSERT[_-]?(API[_-]?KEY|TOKEN)|EXAMPLE[-_]?(TOKEN|SECRET|KEY)|TEST[-_]?(TOKEN|SECRET|KEY)|DUMMY[-_]?(TOKEN|SECRET|KEY)|SAMPLE[-_]?(TOKEN|SECRET|KEY)|<API_KEY>|<TOKEN>|placeholder|example[-_]?(secret|key)|test[-_]?(secret|key)|xxxxxx|\*\*\*\*/i;
+
+/**
+ * Map a finding to a normalized vulnerability ID.
+ * Returns null for types we don't deduplicate (they pass through as-is).
+ */
+export function normalizeType(f) {
+  const t = `${f.title || ''} ${f.category || ''}`;
+  if (/placeholder/i.test(t)) return 'PLACEHOLDER_SECRET';
+  // Logging must be checked before credential matching: "sensitive password
+  // logged" titles must not be absorbed by hardcoded-credential rules.
+  if (
+    f.cwe === 'CWE-532' ||
+    /sensitive (data|password|credential|token)[^.]*(log|expos)|data exposure in logs|logged to (console|logs)|password logging|logging (of )?(password|credential|secret)/i.test(t)
+  ) {
+    return 'SENSITIVE_DATA_LOGGING';
+  }
+  if (
+    f.cwe === 'CWE-798' ||
+    /hardcoded (production |secret |api |credential|password|token)|hardcoded (api|auth)[_ ]?key|provider (api )?key|production credential/i.test(t)
+  ) {
+    return 'HARDCODED_PRODUCTION_CREDENTIAL';
+  }
+  if (/sql injection/i.test(t)) return 'SQL_INJECTION';
+  if (/command injection/i.test(t)) return 'COMMAND_INJECTION';
+  if (/remote code execution|\brce\b|unsafe eval|code execution via eval/i.test(t)) return 'RCE_EVAL';
+  if (/cross-site scripting|\bxss\b/i.test(t)) return 'XSS';
+  if (/(path|directory) traversal/i.test(t)) return 'PATH_TRAVERSAL';
+  if (/ssrf|server-side request forgery/i.test(t)) return 'SSRF';
+  if (/(weak|unsalted|broken).*(password )?hash|md5|sha-?1/i.test(t)) return 'WEAK_PASSWORD_HASHING';
+  if (/open redirect/i.test(t)) return 'OPEN_REDIRECT';
+  if (/\bidor\b|insecure direct object/i.test(t)) return 'IDOR';
+  if (/(insecure|disabled|no |missing)[^.]*(tls|certificate)|certificate validation/i.test(t)) return 'INSECURE_TLS';
+  if (/weak (randomness|random)|predictable random/i.test(t)) return 'WEAK_RANDOMNESS';
+  if (/insecure (de)?serialization|unsafe (de)?serialization|pickle/i.test(t)) return 'UNSAFE_DESERIALIZATION';
+  return null;
+}
+
+function severityRank(s) {
+  return { Critical: 4, High: 3, Medium: 2, Low: 1, Info: 0 }[s] ?? -1;
+}
+
+function mentionsPlaceholder(f) {
+  const hay = `${f.title || ''} ${f.vulnCode || ''} ${f.evidence || ''} ${f.explanation || ''}`;
+  return PLACEHOLDER_VALUE_RE.test(hay);
+}
+
+/**
+ * Merge duplicate findings, keeping the strongest evidence.
+ * Primary = the finding with the highest severity; on ties the earlier one
+ * wins (AI findings are listed before custom-rule findings), so the AI's
+ * title is preserved when it is at least as severe.
+ */
+function mergeInto(primary, dup) {
+  if (severityRank(dup.severity) > severityRank(primary.severity)) {
+    primary.severity = dup.severity;
+    primary.title = dup.title;
+    primary.category = dup.category;
+  }
+  // Strongest confidence wins.
+  const confRank = { High: 3, Medium: 2, Low: 1 };
+  if ((confRank[dup.confidence] || 0) > (confRank[primary.confidence] || 0)) {
+    primary.confidence = dup.confidence;
+  }
+  if (!primary.cwe && dup.cwe) primary.cwe = dup.cwe;
+  if (!primary.owasp && dup.owasp) primary.owasp = dup.owasp;
+  if (!primary.cvss && dup.cvss) { primary.cvss = dup.cvss; primary.vector = dup.vector; }
+  if (!primary.vulnCode && dup.vulnCode) primary.vulnCode = dup.vulnCode;
+  if (!primary.line && dup.line) { primary.line = dup.line; primary.lineLabel = dup.lineLabel; }
+  // Record that both engines independently flagged the same issue.
+  const fromCustom = dup.source === 'custom';
+  const note = fromCustom
+    ? 'Also detected independently by the custom rule engine.'
+    : 'Also detected independently by AI analysis.';
+  if (!/custom rule engine|AI analysis\.$/.test(primary.whyDetected || '')) {
+    primary.whyDetected = `${primary.whyDetected ? primary.whyDetected + ' ' : ''}${note}`;
+  }
+  primary.mergedSources = Array.from(
+    new Set([...(primary.mergedSources || [primary.source]), dup.source])
+  );
+  return primary;
+}
+
+/**
+ * Normalize + deduplicate a merged findings list.
+ * - Placeholder "secrets" are dropped entirely (hygiene mode off).
+ * - Findings that normalize to the same type on the same line (or the same
+ *   embedded credential value) merge into one finding.
+ * - Findings with no normalized type pass through untouched.
+ */
+export function dedupeFindings(issues) {
+  const kept = [];
+  const byKey = new Map();
+  const credentialValues = new Set(); // real credential values already reported
+
+  for (const f of issues || []) {
+    const norm = normalizeType(f);
+
+    // Placeholders: never security findings (hygiene reporting is off).
+    if (norm === 'PLACEHOLDER_SECRET') continue;
+    if (
+      norm === 'HARDCODED_PRODUCTION_CREDENTIAL' &&
+      mentionsPlaceholder(f)
+    ) {
+      continue; // an AI finding about an obvious sample value
+    }
+
+    const key = `${norm}:${f.line ?? 'na'}`;
+    const existing = byKey.get(key);
+    if (existing) {
+      // Same normalized type on the same line: merge evidence into one.
+      mergeInto(existing, f);
+      continue;
+    }
+
+    // Cross-line check: the same credential value reported elsewhere is the
+    // same vulnerability — skip it (only reached when no same-line match).
+    let valueKey = '';
+    if (norm === 'HARDCODED_PRODUCTION_CREDENTIAL') {
+      const m = (f.vulnCode || '').match(/["']([A-Za-z0-9+/_\-]{16,})["']/);
+      if (m) {
+        valueKey = m[1];
+        if (credentialValues.has(valueKey)) continue;
+        credentialValues.add(valueKey);
+      }
+    }
+
+    const rec = Object.assign({}, f);
+    byKey.set(key, rec);
+    kept.push(rec);
+  }
+  return kept;
+}

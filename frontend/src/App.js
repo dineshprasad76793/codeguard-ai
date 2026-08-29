@@ -5,6 +5,7 @@ import OptionsPanel from './components/OptionsPanel';
 import HistoryPanel from './components/HistoryPanel';
 import { parseReport } from './lib/parse';
 import { detectLanguage, runCustomRules } from './lib/detect';
+import { dedupeFindings } from './lib/dedup';
 import { LANGUAGES, EXT_TO_LANG, MAX_HISTORY } from './lib/constants';
 
 const LOADING_STEPS = [
@@ -330,7 +331,9 @@ function App() {
     const parsed = parseReport(analysis);
     if (mode === 'code' && code) {
       const locals = runCustomRules(code, customRules);
-      parsed.issues = [...parsed.issues, ...locals];
+      // Final pipeline step: normalize types, drop placeholder noise, and
+      // merge semantically identical AI + custom-rule findings into one.
+      parsed.issues = dedupeFindings([...parsed.issues, ...locals]);
     }
     return parsed;
   }, [analysis, mode, code, customRules]);
