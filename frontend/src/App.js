@@ -5,7 +5,7 @@ import OptionsPanel from './components/OptionsPanel';
 import HistoryPanel from './components/HistoryPanel';
 import { parseReport } from './lib/parse';
 import { detectLanguage, runCustomRules } from './lib/detect';
-import { dedupeFindings } from './lib/dedup';
+import { dedupeFindings, recountCategories } from './lib/dedup';
 import { LANGUAGES, EXT_TO_LANG, MAX_HISTORY } from './lib/constants';
 
 const LOADING_STEPS = [
@@ -334,6 +334,12 @@ function App() {
       // Final pipeline step: normalize types, drop placeholder noise, and
       // merge semantically identical AI + custom-rule findings into one.
       parsed.issues = dedupeFindings([...parsed.issues, ...locals]);
+      // The AI writes its summary counts before dedup runs, so they can
+      // overcount after merges — recompute from the final finding list.
+      if (parsed.categoryCounts || parsed.issues.length) {
+        parsed.categoryCounts = recountCategories(parsed.issues);
+        parsed.totalFindings = parsed.issues.length;
+      }
     }
     return parsed;
   }, [analysis, mode, code, customRules]);

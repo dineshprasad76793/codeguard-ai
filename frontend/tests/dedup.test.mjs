@@ -12,9 +12,9 @@ function strip(src) {
     .replace(/^export const /gm, 'const ')
     .replace(/^export function /gm, 'function ');
 }
-const { dedupeFindings, normalizeType } = new Function(
+const { dedupeFindings, normalizeType, recountCategories } = new Function(
   strip(readFileSync(join(here, '..', 'src/lib/dedup.js'), 'utf8')) +
-    '; return { dedupeFindings, normalizeType };'
+    '; return { dedupeFindings, normalizeType, recountCategories };'
 )();
 
 let passed = 0;
@@ -249,6 +249,33 @@ test('same secret value on different lines merges (value fingerprint)', () => {
   };
   const out = dedupeFindings([a, b]);
   assert.equal(out.length, 1, 'same credential value must merge across lines');
+});
+
+// ── Summary count recomputation ────────────────────────────────────
+test('recountCategories matches the deduplicated finding list', () => {
+  const issues = [
+    { id: 'a', category: 'Confirmed Vulnerability' },
+    { id: 'b', category: 'Confirmed Vulnerability' },
+    { id: 'c', category: 'Security Hardening' },
+    { id: 'd', category: 'Code Quality' },
+  ];
+  const counts = recountCategories(issues);
+  assert.equal(counts['Confirmed Vulnerability'], 2);
+  assert.equal(counts['Potential Vulnerability'], 0);
+  assert.equal(counts['Security Hardening'], 1);
+  assert.equal(counts['Code Quality'], 1);
+  assert.equal(counts['Informational'], 0);
+});
+
+test('recountCategories skips unknown/missing categories and null entries', () => {
+  const counts = recountCategories([
+    { id: 'x' },
+    { id: 'y', category: 'Weird Category' },
+    null,
+  ]);
+  assert.equal(counts['Confirmed Vulnerability'], 0);
+  assert.equal(counts['Code Quality'], 0);
+  assert.equal(recountCategories(null)['Informational'], 0);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

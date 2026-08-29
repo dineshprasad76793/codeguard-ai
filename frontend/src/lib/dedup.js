@@ -210,3 +210,24 @@ export function dedupeFindings(issues) {
   // logging block into a single root-cause finding.
   return mergeProximityLogging(kept);
 }
+
+// Report category chips must match the findings actually listed. The AI
+// writes its summary block before dedup runs, so its counts overcount once
+// merges happen (5 raw findings, 4 listed).
+const REPORT_CATEGORIES = [
+  'Confirmed Vulnerability',
+  'Potential Vulnerability',
+  'Security Hardening',
+  'Code Quality',
+  'Informational',
+];
+
+export function recountCategories(issues) {
+  const counts = {};
+  for (const c of REPORT_CATEGORIES) counts[c] = 0;
+  for (const f of issues || []) {
+    if (!f) continue;
+    if (counts[f.category] !== undefined) counts[f.category] += 1;
+  }
+  return counts;
+}
