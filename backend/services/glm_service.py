@@ -224,7 +224,8 @@ def build_user_prompt(language: str, code: str) -> str:
 
 
 async def call_glm(system_prompt: str, user_prompt: str, _retried: bool = False,
-                   _max_tokens: int = None, _model_index: int = 0) -> str:
+                   _max_tokens: int = None, _model_index: int = 0,
+                   _shrink: bool = False) -> str:
     if not GLM_API_KEY:
         return (
             "ERROR: GLM_API_KEY is not set. \n\n"
@@ -262,12 +263,21 @@ async def call_glm(system_prompt: str, user_prompt: str, _retried: bool = False,
             # balance — retry once at the smaller budget.
             return await call_glm(system_prompt, user_prompt, _retried=True,
                                   _max_tokens=FALLBACK_MAX_TOKENS,
-                                  _model_index=_model_index)
+                                  _model_index=_model_index,
+                                  _shrink=_shrink)
         if (_model_index + 1) < len(MODEL_CHAIN) and _is_provider_model_error(exc):
             # Preferred model unavailable (capacity/balance) — silently
             # continue down the fallback chain.
             return await call_glm(system_prompt, user_prompt, _retried=_retried,
-                                  _model_index=_model_index + 1)
+                                  _model_index=_model_index + 1,
+                                  _shrink=_shrink)
+        if not _shrink:
+            # The whole chain failed at this budget. Provider 402/429s are
+            # max_tokens- and routing-dependent, so make exactly one more
+            # full pass at the smaller budget before giving up.
+            return await call_glm(system_prompt, user_prompt, _retried=_retried,
+                                  _max_tokens=FALLBACK_MAX_TOKENS,
+                                  _model_index=0, _shrink=True)
         raise
     content = _extract_content(message)
     if not content and not _retried:
