@@ -29,6 +29,15 @@ MODEL_CHAIN = [GLM_MODEL] + [
 ]
 
 
+def _response_body(response) -> bytes:
+    """Best-effort body read: streaming responses raise ResponseNotRead on
+    .content — never let that escape into an error handler."""
+    try:
+        return response.content or b""
+    except Exception:
+        return b""
+
+
 def _is_provider_model_error(exc: Exception) -> bool:
     """Provider-side model failures worth retrying on the next model in the
     chain: 429 (capacity/rate limit), 402 (balance), 404 (model unavailable),
@@ -38,18 +47,21 @@ def _is_provider_model_error(exc: Exception) -> bool:
         return False
     if response.status_code in (402, 404, 429) or response.status_code >= 500:
         return True
-    body = response.content or b""
-    return b"Provider returned error" in body
+    return b"Provider returned error" in _response_body(response)
 
 
 def _is_token_budget_error(exc: Exception) -> bool:
-    """OpenRouter 402/400 'fewer max_tokens' credit-budget rejection."""
+    """OpenRouter 402/400 'fewer max_tokens' credit-budget rejection.
+    A bare 402 is treated as a budget error: on free keys it means the
+    balance cannot cover the requested max_tokens."""
     response = getattr(exc, "response", None)
     if response is None:
         return False
-    if response.status_code not in (400, 402, 413):
+    if response.status_code in (402, 413):
+        return True
+    if response.status_code != 400:
         return False
-    body = response.content or b""
+    body = _response_body(response)
     return b"max_tokens" in body or b"more credits" in body
 
 
@@ -364,9 +376,12 @@ async def stream_glm(system_prompt: str, user_prompt: str, _budget_retried: bool
                 yield fallback
             else:
                 # Last resort: one synchronous retry (it walks the model
-                # chain and retries on budget errors too). Guarded so a
-                # failure here can never produce an empty 200 response.
-                retry_text = await call_glm(system_prompt, user_prompt)
+                # chain and retries on budget errors too). Guarded so ANY
+                # failure here yields a message — never an empty 200.
+                try:
+                    retry_text = await call_glm(system_prompt, user_prompt)
+                except Exception:
+                    retry_text = None
                 yield retry_text or ("ERROR: The analysis service is temporarily "
                                      "unavailable. Please try again.")
         return
@@ -375,6 +390,9 @@ async def stream_glm(system_prompt: str, user_prompt: str, _budget_retried: bool
         if fallback:
             yield fallback
         else:
-            retry_text = await call_glm(system_prompt, user_prompt)
+            try:
+                retry_text = await call_glm(system_prompt, user_prompt)
+            except Exception:
+                retry_text = None
             yield retry_text or ("ERROR: The AI returned an empty analysis. "
                                  "Please try again.")
