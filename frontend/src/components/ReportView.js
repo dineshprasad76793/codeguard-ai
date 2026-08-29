@@ -305,6 +305,7 @@ export default function ReportView({
                   </button>
                 )}
                 {f.owasp && <span className="owasp-tag">{f.owasp}</span>}
+                {f.cwe && <span className="owasp-tag" title="CWE reference">{f.cwe}</span>}
                 <button
                   className="fp-btn"
                   title="Mark as false positive and hide"

@@ -52,7 +52,7 @@ const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // Field labels that can terminate a multi-line field value.
 const FIELD_LABELS = [
-  'Category', 'Severity', 'Confidence', 'File', 'Line', 'Evidence', 'Data Flow',
+  'Category', 'Severity', 'Confidence', 'CWE', 'File', 'Line', 'Evidence', 'Data Flow',
   'Why It Matters', 'Why it is a problem', 'Why It Was Detected',
   'Recommended Fix', 'Recommendation', 'Manual Verification Required',
   'False Positive Analysis',
@@ -146,6 +146,9 @@ export function parseReport(text) {
       category: normalizeCategory(grabField(block, 'Category')),
       severity: normalizeSeverity(severityRaw),
       confidence: normalizeConfidence(grabField(block, 'Confidence')),
+      cwe: (block.match(/\bCWE-(\d+)\b/) || [])[1]
+        ? `CWE-${(block.match(/\bCWE-(\d+)\b/) || [])[1]}`
+        : (grabField(block, 'CWE') || null),
       file: grabField(block, 'File') || null,
       line: line && /^\d+$/.test(line.trim()) ? Number(line.trim()) : null,
       lineLabel: line ? line.trim() : null,

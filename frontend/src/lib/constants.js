@@ -33,13 +33,19 @@ export const DEFAULT_RULES = [
   {
     id: 'rule-password',
     name: 'Hardcoded password',
-    pattern: '\\b(password|passwd|pwd|secret)\\b\\s*[:=]\\s*["\'][^"\']{3,}["\']',
+    pattern: '\\b(password|passwd|pwd|secret|password[_-]?hash|hashed[_-]?password|pass[_-]?hash)\\b\\s*[:=]\\s*["\'][^"\']{3,}["\']',
     enabled: true,
   },
   {
     id: 'rule-apikey',
     name: 'Hardcoded API key or token',
     pattern: '\\b(api[_-]?key|apikey|access[_-]?token|auth[_-]?token|secret[_-]?key)\\b\\s*[:=]\\s*["\'][A-Za-z0-9_\\-.+/]{12,}["\']',
+    enabled: true,
+  },
+  {
+    id: 'rule-provider',
+    name: 'Hardcoded provider API key',
+    pattern: '\\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\\b',
     enabled: true,
   },
   {

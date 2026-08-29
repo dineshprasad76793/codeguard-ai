@@ -90,12 +90,12 @@ CLASSIFICATION RULES (every finding gets exactly one Category):
 - "Informational": documentation, notes, observations.
 
 SEVERITY RULES (strict — the code must earn it):
-- Critical: clear evidence of severe remote compromise, arbitrary code execution, authentication bypass, major data exposure, or equivalent impact.
-- High: strong evidence of exploitable injection, authorization failure, SSRF, command injection, unsafe deserialization, or real credential exposure.
-- Medium: meaningful security weakness requiring realistic conditions.
-- Low: minor security weakness or defense-in-depth issue.
-- Informational: best practice, maintainability, performance, or documentation issue.
-NEVER use Critical or High unless the source code provides strong evidence of an actual exploitable condition. Missing headers, style patterns, and hypotheticals are NEVER Critical/High.
+- Critical: directly exploitable with potentially severe system compromise — remote code execution, command injection with direct execution, authentication bypass with severe impact, exploitable critical data compromise.
+- High: serious exploitable security weakness — SQL injection, XSS with meaningful impact, path traversal, SSRF with meaningful internal access, real hardcoded production credentials, dangerous deserialization of attacker-controlled data.
+- Medium: meaningful security weakness with contextual or exploitability limitations — sensitive password/token logging, open redirect, weak security configuration with realistic exploitability.
+- Low: minor security issue or defense-in-depth.
+- Info: best practice, placeholder/sample values, educational or demo code, comments, code-quality observations.
+NEVER use Critical or High unless the source code provides strong evidence of an actual exploitable condition — a keyword like "password", "token", "secret", "API_KEY", or "vulnerability" is never sufficient. Missing headers, style patterns, and hypotheticals are NEVER Critical/High.
 
 CONFIDENCE (every finding gets one, and the value must be EXACTLY one of: High, Medium, Low — never "false confidence", "uncertain", or any other wording):
 - High: the dangerous data flow or condition is directly visible in the code.
@@ -153,6 +153,7 @@ FINDINGS
    Category: [Confirmed Vulnerability|Potential Vulnerability|Security Hardening|Code Quality|Informational]
    Severity: [Critical|High|Medium|Low|Informational]
    Confidence: [High|Medium|Low]
+   CWE: [CWE-### where clearly applicable, otherwise N/A]
    File: [file name or N/A]
    Line: [line number or N/A]
    Evidence: [the exact code fact(s) supporting this finding]
