@@ -11,10 +11,25 @@ GLM_API_KEY = os.getenv("GLM_API_KEY", "")
 GLM_API_URL = os.getenv("GLM_API_URL", "https://openrouter.ai/api/v1/chat/completions")
 GLM_MODEL = os.getenv("GLM_MODEL", "z-ai/glm-4.7-flash")
 
-# Reasoning models burn completion tokens on internal reasoning before the
-# final answer. 8k was sometimes exhausted mid-reasoning, producing an
-# "empty analysis". 16k leaves room for both.
-MAX_TOKENS = 16_384
+# OpenRouter's free tier validates max_tokens against the key's credit
+# balance: requesting more than the balance could cover returns HTTP 402
+# ("requires more credits, or fewer max_tokens"). 8192 is safely within a
+# free key's budget; if a budget error still occurs, requests retry once
+# at the smaller fallback budget. The reasoning-fallback and auto-retry
+# logic below already handles answers truncated mid-reasoning.
+MAX_TOKENS = int(os.getenv("GLM_MAX_TOKENS", "8192"))
+FALLBACK_MAX_TOKENS = int(os.getenv("GLM_FALLBACK_MAX_TOKENS", "4096"))
+
+
+def _is_token_budget_error(exc: Exception) -> bool:
+    """OpenRouter 402/400 'fewer max_tokens' credit-budget rejection."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return False
+    if response.status_code not in (400, 402, 413):
+        return False
+    body = response.content or b""
+    return b"max_tokens" in body or b"more credits" in body
 
 
 def _extract_content(message: dict) -> str:
@@ -175,7 +190,8 @@ def build_user_prompt(language: str, code: str) -> str:
     )
 
 
-async def call_glm(system_prompt: str, user_prompt: str, _retried: bool = False) -> str:
+async def call_glm(system_prompt: str, user_prompt: str, _retried: bool = False,
+                   _max_tokens: int = None) -> str:
     if not GLM_API_KEY:
         return (
             "ERROR: GLM_API_KEY is not set. \n\n"
@@ -197,22 +213,30 @@ async def call_glm(system_prompt: str, user_prompt: str, _retried: bool = False)
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.3,
-        "max_tokens": MAX_TOKENS,
+        "max_tokens": _max_tokens if _max_tokens is not None else MAX_TOKENS,
     }
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(GLM_API_URL, headers=headers, json=payload)
-        response.raise_for_status()
-        data = response.json()
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(GLM_API_URL, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
         message = data["choices"][0]["message"]
-        content = _extract_content(message)
-        if not content and not _retried:
-            # Reasoning models occasionally return an empty completion;
-            # one immediate retry almost always resolves it.
-            return await call_glm(system_prompt, user_prompt, _retried=True)
-        if not content:
-            return "The AI returned an empty analysis. Please try again."
-        return content
+    except httpx.HTTPStatusError as exc:
+        if not _retried and _is_token_budget_error(exc):
+            # Free-tier keys reject max_tokens above the remaining credit
+            # balance — retry once at the smaller budget.
+            return await call_glm(system_prompt, user_prompt, _retried=True,
+                                  _max_tokens=FALLBACK_MAX_TOKENS)
+        raise
+    content = _extract_content(message)
+    if not content and not _retried:
+        # Reasoning models occasionally return an empty completion;
+        # one immediate retry almost always resolves it.
+        return await call_glm(system_prompt, user_prompt, _retried=True)
+    if not content:
+        return "The AI returned an empty analysis. Please try again."
+    return content
 
 
 async def analyze_code(
@@ -227,7 +251,7 @@ async def analyze_code(
     )
 
 
-async def stream_glm(system_prompt: str, user_prompt: str):
+async def stream_glm(system_prompt: str, user_prompt: str, _budget_retried: bool = False):
     """Yield the AI answer piece by piece (SSE upstream, plain text downstream).
 
     Reasoning-model deltas arrive in `delta.content` (final answer) and
@@ -253,7 +277,7 @@ async def stream_glm(system_prompt: str, user_prompt: str):
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.3,
-        "max_tokens": MAX_TOKENS,
+        "max_tokens": FALLBACK_MAX_TOKENS if _budget_retried else MAX_TOKENS,
         "stream": True,
     }
 
@@ -286,19 +310,32 @@ async def stream_glm(system_prompt: str, user_prompt: str):
                     think = delta.get("reasoning_content") or delta.get("reasoning")
                     if think:
                         reasoning_acc += think
-    except Exception:
+    except Exception as exc:
+        # Free-tier budget rejection: retry the whole stream at the smaller
+        # budget before any fallback. The _budget_retried guard runs this
+        # exactly once per stream_glm call chain.
+        if (not emitted and not _budget_retried and _is_token_budget_error(exc)):
+            async for piece in stream_glm(system_prompt, user_prompt,
+                                          _budget_retried=True):
+                yield piece
+            return
         if not emitted:
             fallback = reasoning_acc.strip()
             if fallback:
                 yield fallback
             else:
                 # Last resort: one synchronous retry (it retries internally
-                # on empty completions too) before surfacing an error.
-                yield await call_glm(system_prompt, user_prompt)
+                # on empty completions and budget errors too). Guarded so a
+                # failure here can never produce an empty 200 response.
+                retry_text = await call_glm(system_prompt, user_prompt)
+                yield retry_text or ("ERROR: The analysis service is temporarily "
+                                     "unavailable. Please try again.")
         return
     if not emitted:
         fallback = reasoning_acc.strip()
         if fallback:
             yield fallback
         else:
-            yield await call_glm(system_prompt, user_prompt)
+            retry_text = await call_glm(system_prompt, user_prompt)
+            yield retry_text or ("ERROR: The AI returned an empty analysis. "
+                                 "Please try again.")
