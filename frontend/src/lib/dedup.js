@@ -22,9 +22,11 @@ export function normalizeType(f) {
   if (/placeholder/i.test(t)) return 'PLACEHOLDER_SECRET';
   // Logging must be checked before credential matching: "sensitive password
   // logged" titles must not be absorbed by hardcoded-credential rules.
+  // Tolerates spelling drift ("Sensititive", "sensetive") and phrasing like
+  // "authorization header logging".
   if (
     f.cwe === 'CWE-532' ||
-    /sensitive (data|password|credential|token)[^.]*(log|expos)|data exposure in logs|logged to (console|logs)|password logging|logging (of )?(password|credential|secret)/i.test(t)
+    /(sensitive|sensitive|sensetive|sensitiive)[^.]*(log|expos)|log(s|ged|ging)[^.\n]{0,40}(password|credential|secret|token|authorization|api[_-]?key)|data exposure in logs|logged to (console|logs)|password logging|logging (of )?(password|credential|secret|header)/i.test(t)
   ) {
     return 'SENSITIVE_DATA_LOGGING';
   }
@@ -94,6 +96,68 @@ function mergeInto(primary, dup) {
   return primary;
 }
 
+// Logging statements within this many lines of each other are treated as
+// one logging root cause (a logging block).
+const LOG_PROXIMITY_LINES = 30;
+
+/**
+ * Cluster same-type logging findings that are close together (e.g. a
+ * password log line and an authorization-header log line in one block) and
+ * merge each cluster into ONE finding whose evidence contains every
+ * statement. Different vulnerability types are never merged here.
+ */
+function mergeProximityLogging(kept) {
+  const logs = kept.filter((f) => f._norm === 'SENSITIVE_DATA_LOGGING');
+  if (logs.length <= 1) return kept;
+  const sorted = [...logs].sort((a, b) => (a.line ?? 0) - (b.line ?? 0));
+  const clusters = [[sorted[0]]];
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = clusters[clusters.length - 1];
+    const lastLine = Math.max(...prev.map((f) => f.line ?? 0));
+    if ((sorted[i].line ?? 0) - lastLine <= LOG_PROXIMITY_LINES) {
+      prev.push(sorted[i]);
+    } else {
+      clusters.push([sorted[i]]);
+    }
+  }
+  // Remove all log findings from kept, then re-insert one merged finding
+  // per cluster at the position of its earliest-line member.
+  const mergedIds = new Set(clusters.flat().map((f) => f.id));
+  const out = kept.filter((f) => !mergedIds.has(f.id));
+  const rank = { High: 3, Medium: 2, Low: 1 };
+  for (const cluster of clusters) {
+    const primary = cluster.find((f) => f.source !== 'custom') || cluster[0];
+    const merged = Object.assign({}, primary);
+    merged.title = 'Sensitive Data Exposure in Logs';
+    merged.severity = cluster.reduce(
+      (best, f) => (rank[f.severity] > rank[best] ? f.severity : best),
+      'Medium'
+    );
+    merged.line = Math.min(...cluster.map((f) => f.line ?? 999999));
+    merged.lineLabel = String(merged.line);
+    merged.confidence = cluster.reduce(
+      (best, f) => (rank[f.confidence] > rank[best] ? f.confidence : best),
+      'Medium'
+    );
+    if (!merged.cwe) merged.cwe = (cluster.find((f) => f.cwe) || {}).cwe || 'CWE-532';
+    if (!merged.owasp) merged.owasp = (cluster.find((f) => f.owasp) || {}).owasp || null;
+    // Combine every logged statement into the evidence.
+    const unique = [...new Set(cluster.map((f) => (f.vulnCode || '').trim()).filter(Boolean))];
+    if (unique.length > 1) merged.vulnCode = unique.join('\n');
+    merged.category = cluster.some((f) => f.category === 'Confirmed Vulnerability')
+      ? 'Confirmed Vulnerability'
+      : 'Potential Vulnerability';
+    merged.mergedCount = cluster.length;
+    merged.whyDetected = `${merged.whyDetected ? merged.whyDetected + ' ' : ''}${
+      cluster.length > 1 ? cluster.length + ' related logging statements were consolidated into this finding.' : ''
+    }`.trim();
+    const insertAt = out.findIndex((f) => (f.line ?? 999999) > merged.line);
+    if (insertAt === -1) out.push(merged);
+    else out.splice(insertAt, 0, merged);
+  }
+  return out;
+}
+
 /**
  * Normalize + deduplicate a merged findings list.
  * - Placeholder "secrets" are dropped entirely (hygiene mode off).
@@ -138,9 +202,11 @@ export function dedupeFindings(issues) {
       }
     }
 
-    const rec = Object.assign({}, f);
+    const rec = Object.assign({}, f, { _norm: norm });
     byKey.set(key, rec);
     kept.push(rec);
   }
-  return kept;
+  // Second pass: consolidate logging statements that are part of the same
+  // logging block into a single root-cause finding.
+  return mergeProximityLogging(kept);
 }

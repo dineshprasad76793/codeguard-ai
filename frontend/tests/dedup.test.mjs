@@ -150,6 +150,79 @@ test('real production credential is NOT suppressed as a placeholder', () => {
   assert.equal(dedupeFindings([ai]).length, 1);
 });
 
+// ── The exact duplicates from the latest regression report ─────────
+test('AI + two custom log findings on nearby lines collapse to ONE', () => {
+  const ai = {
+    id: 'ai-9', title: 'Sensitive credential and authorization header logging',
+    severity: 'Medium', confidence: 'Medium', category: 'Potential Vulnerability',
+    line: 51, cwe: 'CWE-532', source: 'ai',
+  };
+  const c1 = {
+    id: 'log-secret-48', title: 'Sensitive data exposure in logs (custom rule match)',
+    severity: 'Medium', confidence: 'Medium', category: 'Potential Vulnerability',
+    line: 49, cwe: 'CWE-532', vulnCode: 'console.log("Password:", req.body.password);',
+    source: 'custom',
+  };
+  const c2 = {
+    id: 'log-secret-51', title: 'Sensitive data exposure in logs (custom rule match)',
+    severity: 'Medium', confidence: 'Medium', category: 'Potential Vulnerability',
+    line: 52, cwe: 'CWE-532', vulnCode: 'console.log("Authorization:", req.headers.authorization);',
+    source: 'custom',
+  };
+  const out = dedupeFindings([ai, c1, c2]);
+  const logs = out.filter((f) => f._norm === 'SENSITIVE_DATA_LOGGING' || /logs/i.test(f.title));
+  assert.equal(logs.length, 1, `expected 1 merged log finding, got ${logs.length}`);
+  assert.match(logs[0].title, /Sensitive Data Exposure in Logs/);
+  assert.ok((logs[0].vulnCode || '').includes('req.body.password'), 'evidence must include the password statement');
+  assert.ok((logs[0].vulnCode || '').includes('req.headers.authorization'), 'evidence must include the authorization statement');
+});
+
+test('typo\u0027d AI title (Sensititive) still normalizes to SENSITIVE_DATA_LOGGING', () => {
+  assert.equal(
+    normalizeType({ title: 'Sensititive data exposure in logs (custom rule match)' }),
+    'SENSITIVE_DATA_LOGGING'
+  );
+  assert.equal(
+    normalizeType({ title: 'Sensetive credential logging' }),
+    'SENSITIVE_DATA_LOGGING'
+  );
+});
+
+test('authorization-header logging normalizes to SENSITIVE_DATA_LOGGING', () => {
+  assert.equal(
+    normalizeType({ title: 'Sensitive credential and authorization header logging' }),
+    'SENSITIVE_DATA_LOGGING'
+  );
+});
+
+test('log findings far apart (>30 lines) stay separate root causes', () => {
+  const a = {
+    id: 'log-1', title: 'Sensitive data exposure in logs (custom rule match)',
+    severity: 'Medium', confidence: 'Medium', category: 'Potential Vulnerability',
+    line: 10, cwe: 'CWE-532', source: 'custom',
+  };
+  const b = {
+    id: 'log-2', title: 'Sensitive data exposure in logs (custom rule match)',
+    severity: 'Medium', confidence: 'Medium', category: 'Potential Vulnerability',
+    line: 90, cwe: 'CWE-532', source: 'custom',
+  };
+  const out = dedupeFindings([a, b]);
+  assert.equal(out.length, 2, 'distant log findings are separate root causes');
+});
+
+test('different vulnerability types near each other stay separate', () => {
+  const sqli = {
+    id: 'ai-0', title: 'SQL Injection in search', severity: 'High', confidence: 'High',
+    category: 'Confirmed Vulnerability', line: 20, source: 'ai',
+  };
+  const idor = {
+    id: 'ai-1', title: 'IDOR on invoice endpoint', severity: 'Medium', confidence: 'Medium',
+    category: 'Potential Vulnerability', line: 25, source: 'ai',
+  };
+  const out = dedupeFindings([sqli, idor]);
+  assert.equal(out.length, 2);
+});
+
 // ── Non-normalized findings pass through ───────────────────────────
 test('findings with no normalized type pass through untouched', () => {
   const odd = {
